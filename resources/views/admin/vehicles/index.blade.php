@@ -21,6 +21,13 @@
 
         </div>
 
+        <div>
+            <a href="{{ route('admin.vehicles.create') }}" class="btn btn-primary">
+                <i class="bi bi-plus-lg me-1"></i>
+                Add Vehicle
+            </a>
+        </div>
+
     </div>
 
     {{-- Dashboard Cards --}}
@@ -422,11 +429,21 @@
 
         <a
             href="{{ route('admin.vehicles.show',$vehicle) }}"
-            class="btn btn-primary btn-sm">
+            class="btn btn-primary btn-sm me-1">
 
             <i class="bi bi-eye"></i>
 
             View
+
+        </a>
+
+        <a
+            href="{{ route('admin.vehicles.edit',$vehicle) }}"
+            class="btn btn-outline-secondary btn-sm">
+
+            <i class="bi bi-pencil-square"></i>
+
+            Edit
 
         </a>
 

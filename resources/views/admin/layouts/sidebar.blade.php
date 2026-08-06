@@ -38,7 +38,7 @@
 
         <li class="nav-item">
 
-            <a href="#"
+            <a href="{{ route('admin.passengers.index') }}"
                class="nav-link text-white">
 
                 <i class="bi bi-people me-2"></i>
@@ -77,20 +77,7 @@
 
         <li class="nav-item">
 
-            <a href="{{ route('admin.routes.index') }}"
-               class="nav-link text-white">
-
-                <i class="bi bi-signpost-2 me-2"></i>
-
-                Routes
-
-            </a>
-
-        </li>
-
-        <li class="nav-item">
-
-            <a href="#"
+            <a href="{{ route('admin.trips.index') }}"
                class="nav-link text-white">
 
                 <i class="bi bi-map me-2"></i>

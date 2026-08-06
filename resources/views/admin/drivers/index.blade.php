@@ -18,6 +18,13 @@
 
         </div>
 
+        <div>
+            <a href="{{ route('admin.drivers.create') }}" class="btn btn-primary">
+                <i class="bi bi-plus-lg me-1"></i>
+                Add Driver
+            </a>
+        </div>
+
     </div>
 
     <div class="card shadow border-0">
@@ -305,9 +312,17 @@
 
                                 <a
                                     href="{{ route('admin.drivers.show',$driver) }}"
-                                    class="btn btn-primary btn-sm">
+                                    class="btn btn-primary btn-sm me-1">
 
                                     <i class="bi bi-eye"></i>
+
+                                </a>
+
+                            <a
+                                    href="{{ route('admin.drivers.edit',$driver) }}"
+                                    class="btn btn-outline-secondary btn-sm me-1">
+
+                                    <i class="bi bi-pencil-square"></i>
 
                                 </a>
 

@@ -12,6 +12,10 @@ class AuthController extends Controller
 {
     public function login()
     {
+        if (Auth::check() && Auth::user()->role === UserRole::ADMIN && Auth::user()->status === UserStatus::APPROVED) {
+            return redirect()->route('admin.dashboard');
+        }
+
         return view('admin.auth.login');
     }
 
@@ -53,7 +57,7 @@ class AuthController extends Controller
 
         $request->session()->regenerate();
 
-        return redirect()->route('admin.dashboard');
+        return redirect()->intended(route('admin.dashboard'));
     }
 
     public function logout(Request $request)

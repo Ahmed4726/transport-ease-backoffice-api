@@ -25,6 +25,8 @@ class DriverTrip extends Model
 
         'available_seats',
 
+        'is_instant',
+
         'status',
 
         'started_at',
@@ -42,6 +44,10 @@ class DriverTrip extends Model
             'trip_date' => 'date',
 
             'departure_time' => 'datetime:H:i',
+
+            'available_seats' => 'integer',
+
+            'is_instant' => 'boolean',
 
             'started_at' => 'datetime',
 
