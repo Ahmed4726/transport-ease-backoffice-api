@@ -50,6 +50,8 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Driver trips
         Route::get('/driver-trips', [DriverTripController::class, 'index']);
+        Route::get('/driver-trips/{driverTrip}', [DriverTripController::class, 'show']);
+        Route::put('/driver-trips/{driverTrip}', [DriverTripController::class, 'update']);
         Route::post('/driver-trips', [DriverTripController::class, 'store']);
         Route::delete('/driver-trips/{driverTrip}', [DriverTripController::class, 'destroy']);
 
