@@ -9,6 +9,8 @@ use App\Http\Controllers\API\CityController;
 use App\Http\Controllers\API\RouteController;
 use App\Http\Controllers\API\RouteStopController;
 use App\Http\Controllers\API\DriverTripController;
+use App\Http\Controllers\API\DriverTripLocationController;
+use App\Http\Controllers\API\PassengerTripController;
 
 Route::prefix('auth')->group(function () {
 
@@ -19,13 +21,13 @@ Route::prefix('auth')->group(function () {
 
 });
 
-Route::get('/cities', [CityController::class, 'index']);
-Route::get('/cities/{city}/stops', [RouteStopController::class, 'cityStops']);
-
-// Protected
+// Passenger-facing endpoints require authentication.
 Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/cities', [CityController::class, 'index']);
+    Route::get('/cities/{city}/stops', [RouteStopController::class, 'cityStops']);
+    Route::get('/passenger-trips', [PassengerTripController::class, 'index']);
 
-        Route::get('/profile', [AuthController::class, 'profile']);
+    Route::get('/profile', [AuthController::class, 'profile']);
         Route::post('/profile/availability', [AuthController::class, 'updateAvailability']);
         Route::post('/profile/update', [AuthController::class, 'updateDriverProfile']);
         Route::post('/profile/personal-update', [AuthController::class, 'updatePersonalProfile']);
@@ -53,7 +55,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/driver-trips/{driverTrip}', [DriverTripController::class, 'show']);
         Route::put('/driver-trips/{driverTrip}', [DriverTripController::class, 'update']);
         Route::post('/driver-trips', [DriverTripController::class, 'store']);
+        Route::post('/driver-trips/{driverTrip}/start', [DriverTripController::class, 'start']);
         Route::delete('/driver-trips/{driverTrip}', [DriverTripController::class, 'destroy']);
+        Route::post('/driver-trips/{driverTrip}/locations', [DriverTripLocationController::class, 'store']);
+        Route::get('/driver-trips/{driverTrip}/locations/latest', [DriverTripLocationController::class, 'latest']);
 
         Route::get('/me', [AuthController::class, 'me']);
 

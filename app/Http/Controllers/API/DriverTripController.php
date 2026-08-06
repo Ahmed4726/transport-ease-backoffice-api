@@ -42,6 +42,15 @@ class DriverTripController extends Controller
         ];
     }
 
+    protected function applyTripStartState(DriverTrip $driverTrip): DriverTrip
+    {
+        $driverTrip->status = 'started';
+        $driverTrip->started_at = now();
+        $driverTrip->save();
+
+        return $driverTrip;
+    }
+
     public function show(Request $request, DriverTrip $driverTrip)
     {
         $user = $request->user();
@@ -184,6 +193,32 @@ class DriverTripController extends Controller
             DB::rollBack();
 
             return $this->error('Failed to update trip: ' . $e->getMessage(), [], 500);
+        }
+    }
+
+    public function start(Request $request, DriverTrip $driverTrip)
+    {
+        $user = $request->user();
+        $driver = $user->driver;
+
+        if (!$driver) {
+            return $this->error('Driver profile not found.', [], 404);
+        }
+
+        if ($driverTrip->driver_id !== $driver->id) {
+            return $this->error('Unauthorized.', [], 403);
+        }
+
+        if ($driverTrip->status === 'started') {
+            return $this->success('Trip already started.', $driverTrip);
+        }
+
+        try {
+            $this->applyTripStartState($driverTrip);
+
+            return $this->success('Trip started successfully.', $driverTrip);
+        } catch (\Exception $e) {
+            return $this->error('Failed to start trip: ' . $e->getMessage(), [], 500);
         }
     }
 

@@ -82,4 +82,9 @@ class DriverTrip extends Model
         // TripBooking model may not exist yet in this codebase, return relation by class string to avoid static error
         return $this->hasMany('\App\\Models\\TripBooking');
     }
+
+    public function locations(): HasMany
+    {
+        return $this->hasMany(DriverTripLocation::class, 'driver_trip_id');
+    }
 }
