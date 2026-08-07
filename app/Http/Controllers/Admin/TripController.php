@@ -209,11 +209,11 @@ class TripController extends Controller
     protected function getApprovedVehicleForDriver(Driver $driver): ?Vehicle
     {
         return $driver->vehicles()
-            ->where('driver_id', $driver->id)
-            ->where('status', VehicleStatus::APPROVED)
-            ->orderByDesc('approved_at')
-            ->orderByDesc('id')
-            ->first();
+                        ->where('driver_id', $driver->id)
+                        ->where('status', VehicleStatus::APPROVED)
+                        ->orderByDesc('approved_at')
+                        ->orderByDesc('id')
+                        ->first();
     }
 
     protected function validateTripVehicleSelection(array $data): void

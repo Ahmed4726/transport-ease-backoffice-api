@@ -323,6 +323,18 @@
 
             @forelse($vehicles as $vehicle)
 
+@php
+    $driverUser = $vehicle->driver?->user;
+    $driverName = optional($driverUser)->name ?? 'Unknown Driver';
+    $driverEmail = optional($driverUser)->email ?? 'No email';
+    $vehicleBrand = $vehicle->brand ?? 'Unknown';
+    $vehicleModel = $vehicle->model ?? 'Vehicle';
+    $vehicleType = optional($vehicle->vehicleType)->name ?? 'Unknown type';
+    $registrationNumber = $vehicle->registration_number ?? 'N/A';
+    $availableSeats = $vehicle->available_seats ?? 0;
+    $totalSeats = $vehicle->total_seats ?? 0;
+@endphp
+
 <tr>
 
     <td>
@@ -335,13 +347,13 @@
 
         <div class="fw-bold">
 
-            {{ $vehicle->driver->user->name }}
+            {{ $driverName }}
 
         </div>
 
         <small class="text-muted">
 
-            {{ $vehicle->driver->user->email }}
+            {{ $driverEmail }}
 
         </small>
 
@@ -351,15 +363,13 @@
 
         <div class="fw-bold">
 
-            {{ $vehicle->brand }}
-
-            {{ $vehicle->model }}
+            {{ $vehicleBrand }} {{ $vehicleModel }}
 
         </div>
 
         <small class="text-muted">
 
-            {{ optional($vehicle->vehicleType)->name }}
+            {{ $vehicleType }}
 
         </small>
 
@@ -367,17 +377,13 @@
 
     <td>
 
-        {{ $vehicle->registration_number }}
+        {{ $registrationNumber }}
 
     </td>
 
     <td>
 
-        {{ $vehicle->available_seats }}
-
-        /
-
-        {{ $vehicle->total_seats }}
+        {{ $availableSeats }} / {{ $totalSeats }}
 
     </td>
 
@@ -425,10 +431,10 @@
 
     </td>
 
-    <td>
+    <td class="text-nowrap">
 
         <a
-            href="{{ route('admin.vehicles.show',$vehicle) }}"
+            href="{{ route('admin.vehicles.show', $vehicle) }}"
             class="btn btn-primary btn-sm me-1">
 
             <i class="bi bi-eye"></i>
@@ -438,7 +444,7 @@
         </a>
 
         <a
-            href="{{ route('admin.vehicles.edit',$vehicle) }}"
+            href="{{ route('admin.vehicles.edit', $vehicle) }}"
             class="btn btn-outline-secondary btn-sm">
 
             <i class="bi bi-pencil-square"></i>
