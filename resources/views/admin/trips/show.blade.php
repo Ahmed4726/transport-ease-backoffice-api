@@ -28,6 +28,10 @@
                         <dd class="col-7">{{ $trip->available_seats }} / {{ $trip->total_seats }}</dd>
                         <dt class="col-5">Stops</dt>
                         <dd class="col-7">{{ $trip->stops->count() }}</dd>
+                        <dt class="col-5">Distance</dt>
+                        <dd class="col-7">{{ number_format($tripDistanceKm ?? 0, 1) }} km</dd>
+                        <dt class="col-5">ETA</dt>
+                        <dd class="col-7" id="tripEtaLabel">{{ $tripEtaMinutes ?? 0 }} min</dd>
                     </dl>
                 </div>
             </div>
@@ -65,7 +69,8 @@
 @endsection
 
 @php
-    $tripStops = $trip->stops->map(function ($tripStop) {
+    $orderedTripStops = $trip->stops->sortBy('stop_order')->values();
+    $tripStops = $orderedTripStops->map(function ($tripStop) {
         return [
             'lat' => $tripStop->stop?->latitude,
             'lng' => $tripStop->stop?->longitude,
@@ -75,50 +80,151 @@
     })->filter(function ($stop) {
         return !empty($stop['lat']) && !empty($stop['lng']);
     })->values();
+
+    $tripDistanceKm = 0;
+    if ($tripStops->count() >= 2) {
+        $earthRadiusKm = 6371;
+        $toRad = fn ($value) => ($value * M_PI) / 180;
+
+        for ($i = 0; $i < $tripStops->count() - 1; $i++) {
+            $start = $tripStops[$i];
+            $end = $tripStops[$i + 1];
+            $lat1 = $toRad((float) $start['lat']);
+            $lon1 = $toRad((float) $start['lng']);
+            $lat2 = $toRad((float) $end['lat']);
+            $lon2 = $toRad((float) $end['lng']);
+            $deltaLat = $lat2 - $lat1;
+            $deltaLon = $lon2 - $lon1;
+            $a = sin($deltaLat / 2) ** 2 + cos($lat1) * cos($lat2) * sin($deltaLon / 2) ** 2;
+            $tripDistanceKm += $earthRadiusKm * 2 * atan2(sqrt($a), sqrt(1 - $a));
+        }
+    }
+
+    $tripEtaMinutes = $tripDistanceKm > 0 ? max(20, (int) round(($tripDistanceKm / 35) * 60)) : max(20, ($trip->stops->count() > 0 ? ($trip->stops->count() - 1) * 20 : 0));
 @endphp
 
 @section('scripts')
     <script>
-        document.addEventListener('DOMContentLoaded', function () {
-            const stops = @json($tripStops);
-
-            const mapContainer = document.getElementById('tripMap');
-            if (!mapContainer || stops.length === 0) {
+        function whenGoogleMapsReady(callback) {
+            if (window.google && window.google.maps) {
+                callback();
                 return;
             }
 
-            const bounds = new google.maps.LatLngBounds();
-            const map = new google.maps.Map(mapContainer, {
-                zoom: 12,
-                center: { lat: stops[0].lat, lng: stops[0].lng },
-            });
+            document.addEventListener('google-maps-ready', callback, { once: true });
+        }
 
-            const markers = stops.map((stop, index) => {
-                const marker = new google.maps.Marker({
-                    position: { lat: stop.lat, lng: stop.lng },
-                    map,
-                    label: `${index + 1}`,
-                });
+        document.addEventListener('DOMContentLoaded', function () {
+            const stops = @json($tripStops);
+            const etaLabel = document.getElementById('tripEtaLabel');
 
-                bounds.extend(marker.position);
-                const info = new google.maps.InfoWindow({
-                    content: `<strong>${stop.name}</strong><br>${stop.address}`,
-                });
-                marker.addListener('click', () => info.open(map, marker));
-                return marker;
-            });
+            const setEta = (distanceKm, durationMinutes) => {
+                if (etaLabel) {
+                    etaLabel.textContent = `${Number(distanceKm || 0).toFixed(1)} km • ${Number(durationMinutes || 0)} min`;
+                }
+            };
 
-            if (stops.length > 1) {
-                const routePath = new google.maps.Polyline({
-                    path: stops.map(stop => ({ lat: stop.lat, lng: stop.lng })),
-                    strokeColor: '#0088ff',
-                    strokeOpacity: 0.8,
-                    strokeWeight: 4,
-                });
-                routePath.setMap(map);
+            const estimateDistance = (routeStops) => {
+                if (!routeStops || routeStops.length < 2) {
+                    return { distanceKm: 0, durationMinutes: 0 };
+                }
+
+                const toRad = (value) => (value * Math.PI) / 180;
+                const earthRadiusKm = 6371;
+                let totalKm = 0;
+
+                for (let i = 0; i < routeStops.length - 1; i++) {
+                    const start = routeStops[i];
+                    const end = routeStops[i + 1];
+                    const lat1 = toRad(parseFloat(start.lat));
+                    const lon1 = toRad(parseFloat(start.lng));
+                    const lat2 = toRad(parseFloat(end.lat));
+                    const lon2 = toRad(parseFloat(end.lng));
+                    const deltaLat = lat2 - lat1;
+                    const deltaLon = lon2 - lon1;
+                    const a = Math.sin(deltaLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLon / 2) ** 2;
+                    totalKm += earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+                }
+
+                return {
+                    distanceKm: totalKm,
+                    durationMinutes: Math.max(20, Math.round((totalKm / 35) * 60)),
+                };
+            };
+
+            const mapContainer = document.getElementById('tripMap');
+            if (!mapContainer || stops.length === 0) {
+                if (etaLabel) {
+                    etaLabel.textContent = '0.0 km • 0 min';
+                }
+                return;
             }
 
-            map.fitBounds(bounds);
+            const fallbackMetrics = estimateDistance(stops);
+            setEta(fallbackMetrics.distanceKm, fallbackMetrics.durationMinutes);
+
+            whenGoogleMapsReady(function () {
+                const bounds = new google.maps.LatLngBounds();
+                const map = new google.maps.Map(mapContainer, {
+                    zoom: 12,
+                    center: { lat: stops[0].lat, lng: stops[0].lng },
+                });
+
+                const markers = stops.map((stop, index) => {
+                    const marker = new google.maps.Marker({
+                        position: { lat: stop.lat, lng: stop.lng },
+                        map,
+                        label: `${index + 1}`,
+                    });
+
+                    bounds.extend(marker.position);
+                    const info = new google.maps.InfoWindow({
+                        content: `<strong>${stop.name}</strong><br>${stop.address}`,
+                    });
+                    marker.addListener('click', () => info.open(map, marker));
+                    return marker;
+                });
+
+                if (stops.length > 1) {
+                    const service = new google.maps.DistanceMatrixService();
+                    service.getDistanceMatrix({
+                        origins: stops.slice(0, -1).map(stop => new google.maps.LatLng(stop.lat, stop.lng)),
+                        destinations: stops.slice(1).map(stop => new google.maps.LatLng(stop.lat, stop.lng)),
+                        travelMode: google.maps.TravelMode.DRIVING,
+                        unitSystem: google.maps.UnitSystem.METRIC,
+                    }, (response, status) => {
+                        if (status === 'OK' && response && response.rows) {
+                            let totalDistanceMeters = 0;
+                            let totalDurationSeconds = 0;
+
+                            response.rows.forEach((row) => {
+                                row.elements.forEach((element) => {
+                                    if (element && element.distance) {
+                                        totalDistanceMeters += Number(element.distance.value || 0);
+                                    }
+                                    if (element && element.duration) {
+                                        totalDurationSeconds += Number(element.duration.value || 0);
+                                    }
+                                });
+                            });
+
+                            const distanceKm = totalDistanceMeters ? totalDistanceMeters / 1000 : fallbackMetrics.distanceKm;
+                            const durationMinutes = totalDurationSeconds ? Math.max(20, Math.round(totalDurationSeconds / 60)) : fallbackMetrics.durationMinutes;
+                            setEta(distanceKm, durationMinutes);
+                        }
+                    });
+
+                    const routePath = new google.maps.Polyline({
+                        path: stops.map(stop => ({ lat: stop.lat, lng: stop.lng })),
+                        strokeColor: '#0088ff',
+                        strokeOpacity: 0.8,
+                        strokeWeight: 4,
+                    });
+                    routePath.setMap(map);
+                }
+
+                map.fitBounds(bounds);
+            });
         });
     </script>
 @endsection

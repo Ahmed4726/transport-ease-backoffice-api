@@ -36,7 +36,7 @@
                             <th>Driver</th>
                             <th>Vehicle</th>
                             <th>Route</th>
-                            <th>Stops / ETA</th>
+                            <th>Stops / Distance / ETA</th>
                             <th>Status</th>
                             <th>Seats</th>
                             <th>Actions</th>
@@ -53,13 +53,42 @@
                                         $fromCity = $orderedStops->first()?->stop?->city?->name ?? 'N/A';
                                         $toCity = $orderedStops->last()?->stop?->city?->name ?? 'N/A';
                                         $stopCount = max(2, $orderedStops->count());
-                                        $etaMinutes = max(20, ($stopCount - 1) * 20);
+
+                                        $routeStops = $orderedStops
+                                            ->map(fn ($tripStop) => [
+                                                'lat' => (float) ($tripStop->stop?->latitude ?? 0),
+                                                'lng' => (float) ($tripStop->stop?->longitude ?? 0),
+                                            ])
+                                            ->filter(fn ($stop) => $stop['lat'] != 0 && $stop['lng'] != 0)
+                                            ->values();
+
+                                        $distanceKm = 0;
+                                        if ($routeStops->count() >= 2) {
+                                            $earthRadiusKm = 6371;
+                                            $toRad = fn ($value) => ($value * M_PI) / 180;
+
+                                            for ($i = 0; $i < $routeStops->count() - 1; $i++) {
+                                                $start = $routeStops[$i];
+                                                $end = $routeStops[$i + 1];
+                                                $lat1 = $toRad($start['lat']);
+                                                $lon1 = $toRad($start['lng']);
+                                                $lat2 = $toRad($end['lat']);
+                                                $lon2 = $toRad($end['lng']);
+                                                $deltaLat = $lat2 - $lat1;
+                                                $deltaLon = $lon2 - $lon1;
+                                                $a = sin($deltaLat / 2) ** 2 + cos($lat1) * cos($lat2) * sin($deltaLon / 2) ** 2;
+                                                $distanceKm += $earthRadiusKm * 2 * atan2(sqrt($a), sqrt(1 - $a));
+                                            }
+                                        }
+
+                                        $etaMinutes = $distanceKm > 0 ? max(20, (int) round(($distanceKm / 35) * 60)) : max(20, ($stopCount - 1) * 20);
                                     @endphp
                                     <div>{{ $fromCity }} → {{ $toCity }}</div>
                                     <small class="text-muted">{{ $trip->route->name ?? 'Instant route' }}</small>
                                 </td>
                                 <td>
                                     <div class="fw-semibold">Stops: {{ $stopCount }}</div>
+                                    <div class="small text-muted">Distance: {{ number_format($distanceKm, 1) }} km</div>
                                     <div class="small text-muted">ETA: {{ $etaMinutes }} min</div>
                                 </td>
                                 <td>

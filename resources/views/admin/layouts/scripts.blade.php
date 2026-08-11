@@ -1,6 +1,11 @@
+<script>
+window.googleMapsApiReady = function () {
+    window.dispatchEvent(new CustomEvent('google-maps-ready'));
+};
+</script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.7/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js"></script>
-<script src="https://maps.googleapis.com/maps/api/js?key={{ config('services.google_maps.key') }}&libraries=places"></script>
+<script src="https://maps.googleapis.com/maps/api/js?key={{ config('services.google_maps.key') }}&libraries=places&callback=window.googleMapsApiReady"></script>
 
 <script>
 

@@ -112,7 +112,7 @@ class TripController extends Controller
         $tripStopIds = $trip->stops->pluck('route_stop_id')->values()->all();
         $fromStopId = $tripStopIds[0] ?? null;
         $toStopId = $tripStopIds[count($tripStopIds) - 1] ?? null;
-        $selectedStopIds = array_slice($tripStopIds, 1, -1);
+        $selectedStopIds = $this->sanitizeIntermediateStops(array_slice($tripStopIds, 1, -1), $fromStopId, $toStopId);
         $selectedVehicleSummary = $selectedVehicle ? sprintf('Total: %d • Available: %d', max(1, (int) ($selectedVehicle->total_seats ?? 1)), max(1, (int) ($selectedVehicle->available_seats ?? 1))) : '';
 
         return view('admin.trips.edit', compact('trip', 'drivers', 'vehicles', 'routes', 'cities', 'citiesData', 'fromStopId', 'toStopId', 'selectedStopIds', 'driverVehicleMap', 'selectedVehicleId', 'selectedVehicleCapacity', 'selectedVehicleSummary'));
@@ -151,6 +151,43 @@ class TripController extends Controller
         $this->tripService->deleteTrip($trip);
 
         return redirect()->route('admin.trips.index')->with('success', 'Trip deleted successfully.');
+    }
+
+    protected function sanitizeIntermediateStops(array $selectedStopIds, ?int $fromStopId, ?int $toStopId): array
+    {
+        if (!$fromStopId || !$toStopId || empty($selectedStopIds)) {
+            return [];
+        }
+
+        $fromStop = CityStop::find($fromStopId);
+        $toStop = CityStop::find($toStopId);
+
+        if (!$fromStop || !$toStop) {
+            return [];
+        }
+
+        $fromCityId = (int) $fromStop->city_id;
+        $toCityId = (int) $toStop->city_id;
+
+        $validStopIds = CityStop::whereIn('id', array_values(array_unique(array_map('intval', $selectedStopIds))))
+            ->get()
+            ->filter(function (CityStop $stop) use ($fromStopId, $toStopId, $fromCityId, $toCityId) {
+                if ((int) $stop->id === (int) $fromStopId || (int) $stop->id === (int) $toStopId) {
+                    return false;
+                }
+
+                if ((int) $stop->city_id === $fromCityId || (int) $stop->city_id === $toCityId) {
+                    return false;
+                }
+
+                return true;
+            })
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->values()
+            ->all();
+
+        return $validStopIds;
     }
 
     protected function buildCitiesData($cities): array

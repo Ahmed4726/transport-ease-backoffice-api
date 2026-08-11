@@ -141,6 +141,90 @@ document.addEventListener('DOMContentLoaded', function () {
     const initialToStopId = @json(old('to_stop_id', $toStopId));
     const initialSelectedStopIds = @json(old('selected_stop_ids', $selectedStopIds));
 
+    function haversineDistanceKm(start, end) {
+        if (!start || !end || start.latitude == null || start.longitude == null || end.latitude == null || end.longitude == null) {
+            return 0;
+        }
+
+        const toRad = (value) => (value * Math.PI) / 180;
+        const earthRadiusKm = 6371;
+        const lat1 = toRad(parseFloat(start.latitude));
+        const lon1 = toRad(parseFloat(start.longitude));
+        const lat2 = toRad(parseFloat(end.latitude));
+        const lon2 = toRad(parseFloat(end.longitude));
+        const deltaLat = lat2 - lat1;
+        const deltaLon = lon2 - lon1;
+        const a = Math.sin(deltaLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLon / 2) ** 2;
+
+        return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    function estimateRouteMetrics(routeStops) {
+        if (!routeStops || routeStops.length < 2) {
+            return { distanceKm: 0, durationMinutes: 0 };
+        }
+
+        let distanceKm = 0;
+        for (let i = 0; i < routeStops.length - 1; i++) {
+            distanceKm += haversineDistanceKm(routeStops[i], routeStops[i + 1]);
+        }
+
+        return {
+            distanceKm,
+            durationMinutes: Math.max(20, Math.round((distanceKm / 35) * 60)),
+        };
+    }
+
+    function calculateRouteMetrics(routeStops) {
+        if (!routeStops || routeStops.length < 2 || typeof google === 'undefined' || !google.maps) {
+            return estimateRouteMetrics(routeStops);
+        }
+
+        const validStops = routeStops.filter(stop => stop.latitude != null && stop.longitude != null);
+        if (validStops.length < 2) {
+            return estimateRouteMetrics(routeStops);
+        }
+
+        const origins = validStops.slice(0, -1).map(stop => new google.maps.LatLng(parseFloat(stop.latitude), parseFloat(stop.longitude)));
+        const destinations = validStops.slice(1).map(stop => new google.maps.LatLng(parseFloat(stop.latitude), parseFloat(stop.longitude)));
+
+        return new Promise((resolve) => {
+            const service = new google.maps.DistanceMatrixService();
+            service.getDistanceMatrix({
+                origins,
+                destinations,
+                travelMode: google.maps.TravelMode.DRIVING,
+                unitSystem: google.maps.UnitSystem.METRIC,
+                avoidHighways: false,
+                avoidTolls: false,
+            }, (response, status) => {
+                if (status !== 'OK' || !response || !response.rows) {
+                    resolve(estimateRouteMetrics(routeStops));
+                    return;
+                }
+
+                let totalDistanceMeters = 0;
+                let totalDurationSeconds = 0;
+
+                response.rows.forEach((row) => {
+                    row.elements.forEach((element) => {
+                        if (element && element.distance) {
+                            totalDistanceMeters += Number(element.distance.value || 0);
+                        }
+                        if (element && element.duration) {
+                            totalDurationSeconds += Number(element.duration.value || 0);
+                        }
+                    });
+                });
+
+                resolve({
+                    distanceKm: totalDistanceMeters ? totalDistanceMeters / 1000 : 0,
+                    durationMinutes: totalDurationSeconds ? Math.max(20, Math.round(totalDurationSeconds / 60)) : 0,
+                });
+            });
+        });
+    }
+
     function syncVehicleDetails() {
         const driverId = driverSelect?.value;
         const vehicleData = driverVehicleMap[driverId] || null;
@@ -213,17 +297,22 @@ document.addEventListener('DOMContentLoaded', function () {
         return null;
     }
 
-    function getStopProgress(stop, startCity, endCity) {
-        if (!stop || stop.latitude == null || stop.longitude == null || !startCity || !endCity) {
+    function getStopProgress(stop, startPoint, endPoint) {
+        if (!stop || stop.latitude == null || stop.longitude == null || !startPoint || !endPoint) {
             return null;
         }
 
-        const startLng = parseFloat(startCity.longitude);
-        const startLat = parseFloat(startCity.latitude);
-        const endLng = parseFloat(endCity.longitude);
-        const endLat = parseFloat(endCity.latitude);
+        const startLng = parseFloat(startPoint.longitude);
+        const startLat = parseFloat(startPoint.latitude);
+        const endLng = parseFloat(endPoint.longitude);
+        const endLat = parseFloat(endPoint.latitude);
         const stopLng = parseFloat(stop.longitude);
         const stopLat = parseFloat(stop.latitude);
+
+        if (!Number.isFinite(startLng) || !Number.isFinite(startLat) || !Number.isFinite(endLng) || !Number.isFinite(endLat) || !Number.isFinite(stopLng) || !Number.isFinite(stopLat)) {
+            return null;
+        }
+
         const segmentDx = endLng - startLng;
         const segmentDy = endLat - startLat;
         const segmentLengthSquared = (segmentDx * segmentDx) + (segmentDy * segmentDy);
@@ -235,9 +324,9 @@ document.addEventListener('DOMContentLoaded', function () {
         return ((stopLng - startLng) * segmentDx + (stopLat - startLat) * segmentDy) / segmentLengthSquared;
     }
 
-    function compareStopsByProgress(a, b, startCity, endCity) {
-        const progressA = getStopProgress(a, startCity, endCity);
-        const progressB = getStopProgress(b, startCity, endCity);
+    function compareStopsByProgress(a, b, startPoint, endPoint) {
+        const progressA = getStopProgress(a, startPoint, endPoint);
+        const progressB = getStopProgress(b, startPoint, endPoint);
 
         if (progressA == null && progressB == null) {
             return 0;
@@ -253,59 +342,46 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function renderIntermediateStops() {
-        const startCityId = startCitySelect.value;
-        const endCityId = endCitySelect.value;
-        const startCity = getCityById(startCityId);
-        const endCity = getCityById(endCityId);
+        const selectedFromStop = getStopById(fromStopSelect.value);
+        const selectedToStop = getStopById(toStopSelect.value);
         intermediateWrap.innerHTML = '';
 
-        if (!startCity || !endCity) {
-            intermediateWrap.innerHTML = '<div class="text-muted">Choose both cities to see intermediate stops.</div>';
+        if (!selectedFromStop || !selectedToStop) {
+            intermediateWrap.innerHTML = '<div class="text-muted">Choose both start and end stops to see intermediate stops.</div>';
             return;
         }
 
-        const selectedFromStop = getStopById(fromStopSelect.value);
-        const selectedToStop = getStopById(toStopSelect.value);
+        if (selectedFromStop.latitude == null || selectedFromStop.longitude == null || selectedToStop.latitude == null || selectedToStop.longitude == null) {
+            intermediateWrap.innerHTML = '<div class="text-muted">The selected start and end stops must have coordinates.</div>';
+            return;
+        }
+
         const candidateStops = [];
         const seen = new Set();
 
-        const addCandidate = (stop, cityName) => {
-            const key = `${stop.id}`;
-            if (seen.has(key) || String(stop.id) === String(selectedFromStop?.id) || String(stop.id) === String(selectedToStop?.id)) {
-                return;
-            }
-            seen.add(key);
-            candidateStops.push({ ...stop, city_name: cityName });
-        };
+        for (const city of citiesData) {
+            const cityStops = city.stops || [];
+            for (const stop of cityStops) {
+                if (!stop || stop.latitude == null || stop.longitude == null) {
+                    continue;
+                }
 
-        const startCityStops = (startCity.stops || []).slice();
-        const startIndex = selectedFromStop ? startCityStops.findIndex(stop => String(stop.id) === String(selectedFromStop.id)) : -1;
-        if (startIndex >= 0) {
-            startCityStops.slice(startIndex + 1).sort((a, b) => compareStopsByProgress(a, b, startCity, endCity)).forEach(stop => addCandidate(stop, startCity.name));
+                if (String(stop.id) === String(selectedFromStop.id) || String(stop.id) === String(selectedToStop.id)) {
+                    continue;
+                }
+
+                const progress = getStopProgress(stop, selectedFromStop, selectedToStop);
+                if (progress != null && progress > 0 && progress < 1) {
+                    const key = `${stop.id}`;
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        candidateStops.push({ ...stop, city_name: city.name });
+                    }
+                }
+            }
         }
 
-        const endCityStops = (endCity.stops || []).slice();
-        const endIndex = selectedToStop ? endCityStops.findIndex(stop => String(stop.id) === String(selectedToStop.id)) : -1;
-        if (endIndex >= 0) {
-            endCityStops.slice(0, endIndex).sort((a, b) => compareStopsByProgress(a, b, startCity, endCity)).forEach(stop => addCandidate(stop, endCity.name));
-        }
-
-        const betweenCities = citiesData.filter(city => {
-            if (String(city.id) === String(startCityId) || String(city.id) === String(endCityId)) {
-                return false;
-            }
-            if (city.latitude == null || city.longitude == null || startCity.latitude == null || startCity.longitude == null || endCity.latitude == null || endCity.longitude == null) {
-                return false;
-            }
-
-            return getStopProgress({ latitude: city.latitude, longitude: city.longitude }, startCity, endCity) != null && getStopProgress({ latitude: city.latitude, longitude: city.longitude }, startCity, endCity) > 0 && getStopProgress({ latitude: city.latitude, longitude: city.longitude }, startCity, endCity) < 1;
-        }).sort((a, b) => compareStopsByProgress({ latitude: a.latitude, longitude: a.longitude }, { latitude: b.latitude, longitude: b.longitude }, startCity, endCity));
-
-        betweenCities.forEach(city => {
-            (city.stops || []).slice().sort((a, b) => compareStopsByProgress(a, b, startCity, endCity)).forEach(stop => addCandidate(stop, city.name));
-        });
-
-        candidateStops.sort((a, b) => compareStopsByProgress(a, b, startCity, endCity));
+        candidateStops.sort((a, b) => compareStopsByProgress(a, b, selectedFromStop, selectedToStop));
 
         const selectedIds = new Set(selectedStops.map(stop => String(stop.id)));
         const chips = document.createElement('div');
@@ -325,7 +401,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 } else {
                     selectedStops.push(stop);
                 }
-                syncSelectedStops();
+                renderIntermediateStops();
             });
             col.appendChild(btn);
             chips.appendChild(col);
@@ -346,11 +422,18 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         if (typeof google === 'undefined' || !google.maps) {
-            routeMapElement.innerHTML = '<div class="text-muted">Google Maps is unavailable right now.</div>';
+            routeMapElement.innerHTML = '<div class="text-muted">Loading Google Maps preview...</div>';
+            const reRender = () => renderRouteMap(routeStops);
+            if (!window.__tripMapReadyBound) {
+                window.__tripMapReadyBound = true;
+                document.addEventListener('google-maps-ready', reRender, { once: true });
+            }
             return;
         }
 
-        if (!routeMapInstance) {            routeMapElement.innerHTML = '';            routeMapInstance = new google.maps.Map(routeMapElement, {
+        if (!routeMapInstance) {
+            routeMapElement.innerHTML = '';
+            routeMapInstance = new google.maps.Map(routeMapElement, {
                 center: { lat: 24.8607, lng: 67.0011 },
                 zoom: 5,
                 disableDefaultUI: true,
@@ -364,15 +447,26 @@ document.addEventListener('DOMContentLoaded', function () {
             routePolyline = null;
         }
 
-        const validStops = routeStops.filter(stop => stop.latitude != null && stop.longitude != null);
+        const validStops = routeStops.filter((stop) => {
+            const latitude = Number.parseFloat(stop.latitude);
+            const longitude = Number.parseFloat(stop.longitude);
+            return Number.isFinite(latitude) && Number.isFinite(longitude) && latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180;
+        });
+
         if (!validStops.length) {
-            routeMapElement.innerHTML = '<div class="text-muted">Coordinates are not available for the selected stops.</div>';
+            if (routeMapInstance) {
+                routeMapInstance.setCenter({ lat: 24.8607, lng: 67.0011 });
+                routeMapInstance.setZoom(5);
+                google.maps.event.trigger(routeMapInstance, 'resize');
+            }
             return;
         }
 
         const bounds = new google.maps.LatLngBounds();
         validStops.forEach((stop) => {
-            const position = { lat: parseFloat(stop.latitude), lng: parseFloat(stop.longitude) };
+            const latitude = Number.parseFloat(stop.latitude);
+            const longitude = Number.parseFloat(stop.longitude);
+            const position = { lat: latitude, lng: longitude };
             bounds.extend(position);
             const marker = new google.maps.Marker({
                 position,
@@ -403,7 +497,7 @@ document.addEventListener('DOMContentLoaded', function () {
         routeMapInstance.fitBounds(bounds);
     }
 
-    function syncSelectedStops() {
+    async function syncSelectedStops() {
         const selectedIds = selectedStops.map(stop => stop.id);
         selectedStopIdsInput.value = selectedIds.join(',');
         const routeStops = [];
@@ -433,10 +527,14 @@ document.addEventListener('DOMContentLoaded', function () {
             return progressA - progressB;
         });
 
-        const etaMinutes = Math.max(20, (routeStops.length - 1) * 20);
-        routeSummary.textContent = routeStops.length ? `${routeStops.length} stops • ${etaMinutes} min` : 'No stops selected';
         const stopItems = routeStops.map((item, index) => `<li class="mb-2"><span class="badge rounded-pill ${item.type === 'start' ? 'bg-success' : item.type === 'end' ? 'bg-danger' : 'bg-info'} me-2">${index + 1}</span>${item.city_name ? `${item.city_name} - ${item.label}` : item.label}</li>`).join('');
         routeStopList.innerHTML = routeStops.length ? stopItems : '<li class="text-muted">Pick a start city and end city to see the route build live.</li>';
+
+        const routeMetrics = await calculateRouteMetrics(routeStops);
+        const distanceKm = Number(routeMetrics.distanceKm || 0);
+        const etaMinutes = Number(routeMetrics.durationMinutes || 0);
+
+        routeSummary.textContent = routeStops.length ? `${routeStops.length} stops • ${distanceKm.toFixed(1)} km • ${etaMinutes} min` : 'No stops selected';
         renderRouteMap(routeStops);
     }
 
@@ -468,8 +566,12 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    fromStopSelect?.addEventListener('change', syncSelectedStops);
-    toStopSelect?.addEventListener('change', syncSelectedStops);
+    fromStopSelect?.addEventListener('change', () => {
+        renderIntermediateStops();
+    });
+    toStopSelect?.addEventListener('change', () => {
+        renderIntermediateStops();
+    });
 
     driverSelect?.addEventListener('change', syncVehicleDetails);
     syncVehicleDetails();

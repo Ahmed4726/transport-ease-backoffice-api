@@ -107,6 +107,8 @@ class TripService
             return;
         }
 
+        $selectedStopIds = $this->filterIntermediateStopIds($selectedStopIds, $fromStopId, $toStopId);
+
         $sequence = [$fromStopId];
         foreach ($selectedStopIds as $stopId) {
             $sequence[] = $stopId;
@@ -137,6 +139,43 @@ class TripService
                 'stop_order' => $index + 1,
             ]);
         }
+    }
+
+    protected function filterIntermediateStopIds(array $selectedStopIds, int $fromStopId, int $toStopId): array
+    {
+        if (empty($selectedStopIds)) {
+            return [];
+        }
+
+        $fromStop = \App\Models\CityStop::find($fromStopId);
+        $toStop = \App\Models\CityStop::find($toStopId);
+
+        if (!$fromStop || !$toStop) {
+            return [];
+        }
+
+        $fromCityId = (int) $fromStop->city_id;
+        $toCityId = (int) $toStop->city_id;
+
+        $selectedStopIds = array_values(array_unique(array_map('intval', $selectedStopIds)));
+
+        return \App\Models\CityStop::whereIn('id', $selectedStopIds)
+            ->get()
+            ->filter(function ($stop) use ($fromStopId, $toStopId, $fromCityId, $toCityId) {
+                if ((int) $stop->id === (int) $fromStopId || (int) $stop->id === (int) $toStopId) {
+                    return false;
+                }
+
+                if ((int) $stop->city_id === $fromCityId || (int) $stop->city_id === $toCityId) {
+                    return false;
+                }
+
+                return true;
+            })
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->values()
+            ->all();
     }
 
     public function deleteTrip(DriverTrip $trip): void
