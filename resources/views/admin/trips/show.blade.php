@@ -1,5 +1,47 @@
 @extends('admin.layouts.app')
 
+@php
+    $latestLocation = $trip->locations()->latest('recorded_at')->first();
+    $driverLocation = $latestLocation ? [
+        'lat' => (float) $latestLocation->latitude,
+        'lng' => (float) $latestLocation->longitude,
+        'recorded_at' => $latestLocation->recorded_at?->toDateTimeString(),
+    ] : null;
+
+    $orderedTripStops = $trip->stops->sortBy('stop_order')->values();
+    $tripStops = $orderedTripStops->map(function ($tripStop) {
+        return [
+            'lat' => $tripStop->stop?->latitude,
+            'lng' => $tripStop->stop?->longitude,
+            'name' => $tripStop->stop?->location_name ?: $tripStop->stop?->address ?: 'Stop ' . $tripStop->stop_order,
+            'address' => $tripStop->stop?->address,
+        ];
+    })->filter(function ($stop) {
+        return !empty($stop['lat']) && !empty($stop['lng']);
+    })->values();
+
+    $tripDistanceKm = 0;
+    if ($tripStops->count() >= 2) {
+        $earthRadiusKm = 6371;
+        $toRad = fn ($value) => ($value * M_PI) / 180;
+
+        for ($i = 0; $i < $tripStops->count() - 1; $i++) {
+            $start = $tripStops[$i];
+            $end = $tripStops[$i + 1];
+            $lat1 = $toRad((float) $start['lat']);
+            $lon1 = $toRad((float) $start['lng']);
+            $lat2 = $toRad((float) $end['lat']);
+            $lon2 = $toRad((float) $end['lng']);
+            $deltaLat = $lat2 - $lat1;
+            $deltaLon = $lon2 - $lon1;
+            $a = sin($deltaLat / 2) ** 2 + cos($lat1) * cos($lat2) * sin($deltaLon / 2) ** 2;
+            $tripDistanceKm += $earthRadiusKm * 2 * atan2(sqrt($a), sqrt(1 - $a));
+        }
+    }
+
+    $tripEtaMinutes = $tripDistanceKm > 0 ? max(20, (int) round(($tripDistanceKm / 35) * 60)) : max(20, ($trip->stops->count() > 0 ? ($trip->stops->count() - 1) * 20 : 0));
+@endphp
+
 @section('title', 'Trip Detail')
 
 @section('content')
@@ -24,6 +66,10 @@
                         <dd class="col-7">{{ $trip->vehicle->brand ?? '' }} {{ $trip->vehicle->model ?? '' }}</dd>
                         <dt class="col-5">Status</dt>
                         <dd class="col-7"><span class="badge bg-{{ $trip->status === 'scheduled' ? 'secondary' : ($trip->status === 'started' ? 'info' : ($trip->status === 'completed' ? 'success' : 'danger')) }}">{{ ucfirst($trip->status) }}</span></dd>
+                        @if($trip->status === 'started')
+                            <dt class="col-5">Live</dt>
+                            <dd class="col-7"><button type="button" class="btn btn-sm btn-success">Trip is live</button></dd>
+                        @endif
                         <dt class="col-5">Seats</dt>
                         <dd class="col-7">{{ $trip->available_seats }} / {{ $trip->total_seats }}</dd>
                         <dt class="col-5">Stops</dt>
@@ -32,6 +78,10 @@
                         <dd class="col-7">{{ number_format($tripDistanceKm ?? 0, 1) }} km</dd>
                         <dt class="col-5">ETA</dt>
                         <dd class="col-7" id="tripEtaLabel">{{ $tripEtaMinutes ?? 0 }} min</dd>
+                        @if($driverLocation)
+                            <dt class="col-5">Driver location</dt>
+                            <dd class="col-7" id="driverLocationLabel">{{ number_format($driverLocation['lat'], 5) }}, {{ number_format($driverLocation['lng'], 5) }}</dd>
+                        @endif
                     </dl>
                 </div>
             </div>
@@ -68,41 +118,6 @@
 </div>
 @endsection
 
-@php
-    $orderedTripStops = $trip->stops->sortBy('stop_order')->values();
-    $tripStops = $orderedTripStops->map(function ($tripStop) {
-        return [
-            'lat' => $tripStop->stop?->latitude,
-            'lng' => $tripStop->stop?->longitude,
-            'name' => $tripStop->stop?->location_name ?: $tripStop->stop?->address ?: 'Stop ' . $tripStop->stop_order,
-            'address' => $tripStop->stop?->address,
-        ];
-    })->filter(function ($stop) {
-        return !empty($stop['lat']) && !empty($stop['lng']);
-    })->values();
-
-    $tripDistanceKm = 0;
-    if ($tripStops->count() >= 2) {
-        $earthRadiusKm = 6371;
-        $toRad = fn ($value) => ($value * M_PI) / 180;
-
-        for ($i = 0; $i < $tripStops->count() - 1; $i++) {
-            $start = $tripStops[$i];
-            $end = $tripStops[$i + 1];
-            $lat1 = $toRad((float) $start['lat']);
-            $lon1 = $toRad((float) $start['lng']);
-            $lat2 = $toRad((float) $end['lat']);
-            $lon2 = $toRad((float) $end['lng']);
-            $deltaLat = $lat2 - $lat1;
-            $deltaLon = $lon2 - $lon1;
-            $a = sin($deltaLat / 2) ** 2 + cos($lat1) * cos($lat2) * sin($deltaLon / 2) ** 2;
-            $tripDistanceKm += $earthRadiusKm * 2 * atan2(sqrt($a), sqrt(1 - $a));
-        }
-    }
-
-    $tripEtaMinutes = $tripDistanceKm > 0 ? max(20, (int) round(($tripDistanceKm / 35) * 60)) : max(20, ($trip->stops->count() > 0 ? ($trip->stops->count() - 1) * 20 : 0));
-@endphp
-
 @section('scripts')
     <script>
         function whenGoogleMapsReady(callback) {
@@ -115,8 +130,15 @@
         }
 
         document.addEventListener('DOMContentLoaded', function () {
+            const tripId = {{ $trip->id }};
+            const liveUrl = '{{ route('admin.trips.live', $trip) }}';
             const stops = @json($tripStops);
+            let latestLocation = @json($driverLocation);
             const etaLabel = document.getElementById('tripEtaLabel');
+            const driverLocationLabel = document.getElementById('driverLocationLabel');
+            let map = null;
+            let driverMarker = null;
+            let routePath = null;
 
             const setEta = (distanceKm, durationMinutes) => {
                 if (etaLabel) {
@@ -163,11 +185,15 @@
             const fallbackMetrics = estimateDistance(stops);
             setEta(fallbackMetrics.distanceKm, fallbackMetrics.durationMinutes);
 
+            if (driverLocationLabel && latestLocation) {
+                driverLocationLabel.textContent = `${Number(latestLocation.lat).toFixed(5)}, ${Number(latestLocation.lng).toFixed(5)}`;
+            }
+
             whenGoogleMapsReady(function () {
                 const bounds = new google.maps.LatLngBounds();
-                const map = new google.maps.Map(mapContainer, {
+                map = new google.maps.Map(mapContainer, {
                     zoom: 12,
-                    center: { lat: stops[0].lat, lng: stops[0].lng },
+                    center: latestLocation ? { lat: latestLocation.lat, lng: latestLocation.lng } : { lat: stops[0].lat, lng: stops[0].lng },
                 });
 
                 const markers = stops.map((stop, index) => {
@@ -184,6 +210,36 @@
                     marker.addListener('click', () => info.open(map, marker));
                     return marker;
                 });
+
+                if (driverMarker) {
+                    driverMarker.setMap(null);
+                    driverMarker = null;
+                }
+                if (routePath) {
+                    routePath.setMap(null);
+                    routePath = null;
+                }
+
+                if (latestLocation) {
+                    driverMarker = new google.maps.Marker({
+                        position: { lat: latestLocation.lat, lng: latestLocation.lng },
+                        map,
+                        title: 'Driver current location',
+                        icon: {
+                            path: google.maps.SymbolPath.CIRCLE,
+                            scale: 10,
+                            fillColor: '#28a745',
+                            fillOpacity: 1,
+                            strokeColor: '#ffffff',
+                            strokeWeight: 3,
+                        },
+                    });
+                    bounds.extend(driverMarker.getPosition());
+                    const driverInfo = new google.maps.InfoWindow({
+                        content: `<strong>Driver live location</strong><br>${latestLocation.lat}, ${latestLocation.lng}`,
+                    });
+                    driverMarker.addListener('click', () => driverInfo.open(map, driverMarker));
+                }
 
                 if (stops.length > 1) {
                     const service = new google.maps.DistanceMatrixService();
@@ -214,7 +270,7 @@
                         }
                     });
 
-                    const routePath = new google.maps.Polyline({
+                    routePath = new google.maps.Polyline({
                         path: stops.map(stop => ({ lat: stop.lat, lng: stop.lng })),
                         strokeColor: '#0088ff',
                         strokeOpacity: 0.8,
@@ -223,8 +279,64 @@
                     routePath.setMap(map);
                 }
 
+                if (latestLocation) {
+                    const driverPoint = new google.maps.LatLng(latestLocation.lat, latestLocation.lng);
+                    bounds.extend(driverPoint);
+                }
+
                 map.fitBounds(bounds);
             });
+
+            async function refreshLiveTrip() {
+                if (!liveUrl) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch(liveUrl, {
+                        headers: {
+                            'Accept': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest',
+                        },
+                    });
+
+                    if (!response.ok) {
+                        return;
+                    }
+
+                    const payload = await response.json();
+                    if (!payload || !payload.status) {
+                        return;
+                    }
+
+                    if (payload.latest_location) {
+                        latestLocation = payload.latest_location;
+                        if (driverLocationLabel) {
+                            driverLocationLabel.textContent = `${Number(payload.latest_location.lat).toFixed(5)}, ${Number(payload.latest_location.lng).toFixed(5)}`;
+                        }
+
+                        if (window.google && window.google.maps && map) {
+                            const nextPosition = { lat: payload.latest_location.lat, lng: payload.latest_location.lng };
+                            if (driverMarker) {
+                                driverMarker.setPosition(nextPosition);
+                            }
+                            if (map && !routePath) {
+                                map.setCenter(nextPosition);
+                            }
+                        }
+                    }
+
+                    if (payload.distance_km != null && payload.eta_minutes != null && etaLabel) {
+                        etaLabel.textContent = `${Number(payload.distance_km).toFixed(1)} km • ${Number(payload.eta_minutes)} min`;
+                    }
+                } catch (error) {
+                    console.warn('Live trip refresh failed:', error);
+                }
+            }
+
+            if ({{ $trip->status === 'started' ? 'true' : 'false' }}) {
+                setInterval(refreshLiveTrip, 5000);
+            }
         });
     </script>
 @endsection

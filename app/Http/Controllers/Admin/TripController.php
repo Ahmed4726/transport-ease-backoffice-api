@@ -88,6 +88,54 @@ class TripController extends Controller
         return view('admin.trips.show', compact('trip'));
     }
 
+    public function live(DriverTrip $trip)
+    {
+        $trip = $this->tripService->getTrip($trip->id);
+        $latestLocation = $trip->locations()->latest('recorded_at')->first();
+
+        $orderedStops = $trip->stops->sortBy('stop_order')->values();
+        $tripStops = $orderedStops->map(function ($tripStop) {
+            return [
+                'lat' => $tripStop->stop?->latitude,
+                'lng' => $tripStop->stop?->longitude,
+                'name' => $tripStop->stop?->location_name ?: $tripStop->stop?->address ?: 'Stop ' . $tripStop->stop_order,
+                'address' => $tripStop->stop?->address,
+            ];
+        })->filter(fn ($stop) => !empty($stop['lat']) && !empty($stop['lng']))->values();
+
+        $distanceKm = 0;
+        if ($tripStops->count() >= 2) {
+            $earthRadiusKm = 6371;
+            $toRad = fn ($value) => ($value * M_PI) / 180;
+            for ($i = 0; $i < $tripStops->count() - 1; $i++) {
+                $start = $tripStops[$i];
+                $end = $tripStops[$i + 1];
+                $lat1 = $toRad((float) $start['lat']);
+                $lon1 = $toRad((float) $start['lng']);
+                $lat2 = $toRad((float) $end['lat']);
+                $lon2 = $toRad((float) $end['lng']);
+                $deltaLat = $lat2 - $lat1;
+                $deltaLon = $lon2 - $lon1;
+                $a = sin($deltaLat / 2) ** 2 + cos($lat1) * cos($lat2) * sin($deltaLon / 2) ** 2;
+                $distanceKm += $earthRadiusKm * 2 * atan2(sqrt($a), sqrt(1 - $a));
+            }
+        }
+
+        $etaMinutes = $distanceKm > 0 ? max(20, (int) round(($distanceKm / 35) * 60)) : max(20, ($trip->stops->count() > 0 ? ($trip->stops->count() - 1) * 20 : 0));
+
+        return response()->json([
+            'status' => $trip->status,
+            'distance_km' => round($distanceKm, 1),
+            'eta_minutes' => $etaMinutes,
+            'latest_location' => $latestLocation ? [
+                'lat' => (float) $latestLocation->latitude,
+                'lng' => (float) $latestLocation->longitude,
+                'recorded_at' => $latestLocation->recorded_at?->toDateTimeString(),
+            ] : null,
+            'stops' => $tripStops->all(),
+        ]);
+    }
+
     public function edit(DriverTrip $trip)
     {
         $drivers = Driver::with('user')->whereHas('vehicles', function ($query) {

@@ -114,6 +114,9 @@ Route::middleware('auth')->group(function () {
             Route::get('/{trip}', [TripController::class, 'show'])
                 ->name('show');
 
+            Route::get('/{trip}/live', [TripController::class, 'live'])
+                ->name('live');
+
             Route::get('/{trip}/edit', [TripController::class, 'edit'])
                 ->name('edit');
 

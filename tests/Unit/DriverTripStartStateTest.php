@@ -26,4 +26,23 @@ class DriverTripStartStateTest extends TestCase
         $this->assertSame('started', $result->status);
         $this->assertNotNull($result->started_at);
     }
+
+    public function test_starting_trip_accepts_current_coordinates(): void
+    {
+        $controller = new class extends DriverTripController {
+        };
+
+        $trip = new DriverTrip([
+            'status' => 'scheduled',
+            'started_at' => null,
+        ]);
+
+        $reflection = new \ReflectionMethod($controller, 'applyTripStartState');
+        $reflection->setAccessible(true);
+
+        $result = $reflection->invokeArgs($controller, [$trip, 24.8607, 67.0011]);
+
+        $this->assertSame('started', $result->status);
+        $this->assertNotNull($result->started_at);
+    }
 }

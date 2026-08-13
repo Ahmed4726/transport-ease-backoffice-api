@@ -4,6 +4,7 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Models\DriverTrip;
+use App\Models\DriverTripLocation;
 use App\Models\TripFare;
 use App\Models\DriverTripStop;
 use Illuminate\Http\Request;
@@ -42,11 +43,25 @@ class DriverTripController extends Controller
         ];
     }
 
-    protected function applyTripStartState(DriverTrip $driverTrip): DriverTrip
+    protected function applyTripStartState(DriverTrip $driverTrip, ?float $latitude = null, ?float $longitude = null): DriverTrip
     {
         $driverTrip->status = 'started';
         $driverTrip->started_at = now();
         $driverTrip->save();
+
+        if ($latitude !== null && $longitude !== null && is_numeric($latitude) && is_numeric($longitude)) {
+            $latitudeValue = (float) $latitude;
+            $longitudeValue = (float) $longitude;
+
+            if ($latitudeValue >= -90 && $latitudeValue <= 90 && $longitudeValue >= -180 && $longitudeValue <= 180) {
+                DriverTripLocation::create([
+                    'driver_trip_id' => $driverTrip->id,
+                    'latitude' => $latitudeValue,
+                    'longitude' => $longitudeValue,
+                    'recorded_at' => now(),
+                ]);
+            }
+        }
 
         return $driverTrip;
     }
@@ -66,10 +81,13 @@ class DriverTripController extends Controller
 
         $trip = $driverTrip->load(['stops' => function ($query) {
             $query->orderBy('stop_order');
-        }, 'stops.stop.city']);
+        }, 'stops.stop.city', 'locations' => function ($query) {
+            $query->latest('recorded_at');
+        }]);
 
         $orderedStops = $trip->stops->sortBy('stop_order')->values();
         $tripData = $trip->toArray();
+        $tripData['latest_location'] = $trip->locations->first()?->only(['latitude', 'longitude', 'recorded_at']) ?? null;
         $tripData['stops'] = $orderedStops->map(function ($tripStop) {
             $stop = $tripStop->stop;
             return [
@@ -209,12 +227,23 @@ class DriverTripController extends Controller
             return $this->error('Unauthorized.', [], 403);
         }
 
-        if ($driverTrip->status === 'started') {
-            return $this->success('Trip already started.', $driverTrip);
+        $validated = $request->validate([
+            'latitude' => ['nullable', 'numeric', 'between:-90,90'],
+            'longitude' => ['nullable', 'numeric', 'between:-180,180'],
+        ]);
+
+        $hasCoordinates = array_key_exists('latitude', $validated) || array_key_exists('longitude', $validated);
+
+        if ($hasCoordinates && (!array_key_exists('latitude', $validated) || !array_key_exists('longitude', $validated))) {
+            return $this->error('Both latitude and longitude are required to start from a location.', [], 422);
         }
 
         try {
-            $this->applyTripStartState($driverTrip);
+            $this->applyTripStartState(
+                $driverTrip,
+                $validated['latitude'] ?? null,
+                $validated['longitude'] ?? null,
+            );
 
             return $this->success('Trip started successfully.', $driverTrip);
         } catch (\Exception $e) {
