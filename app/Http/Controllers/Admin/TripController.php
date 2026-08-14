@@ -224,8 +224,11 @@ class TripController extends Controller
                     return false;
                 }
 
-                if ((int) $stop->city_id === $fromCityId || (int) $stop->city_id === $toCityId) {
-                    return false;
+                $sameCityAsFrom = (int) $stop->city_id === $fromCityId;
+                $sameCityAsTo = (int) $stop->city_id === $toCityId;
+
+                if ($sameCityAsFrom || $sameCityAsTo) {
+                    return true;
                 }
 
                 return true;
