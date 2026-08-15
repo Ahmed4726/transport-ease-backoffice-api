@@ -49,7 +49,21 @@ class PassengerTripController extends Controller
                 return false;
             }
 
-            return true;
+            if (!in_array($trip->status, ['scheduled', 'started'], true)) {
+                return false;
+            }
+
+            $targetStopId = $toStopId ?? $fromStopId;
+            if ($targetStopId === null) {
+                return true;
+            }
+
+            $latestLocation = $trip->locations()->latest('recorded_at')->first();
+            if (!$latestLocation) {
+                return true;
+            }
+
+            return $this->isDriverStillBeforePassengerStop($trip, $targetStopId);
         })->map(function (DriverTrip $trip) use ($fromStopId, $toStopId): array {
             $orderedStops = $trip->stops->sortBy('stop_order')->values();
             $stopData = [];
@@ -66,6 +80,7 @@ class PassengerTripController extends Controller
             }
 
             $progress = $this->buildTripProgress($trip, $stopData);
+            $liveDriver = $this->buildDriverLiveSnapshot($trip, $toStopId ?? $fromStopId, $stopData);
 
             return [
                 'id' => $trip->id,
@@ -84,6 +99,14 @@ class PassengerTripController extends Controller
                 'progress_percent' => $progress['progress_percent'],
                 'total_eta_minutes' => $progress['total_eta_minutes'],
                 'stop_count' => count($stopData),
+                'driver_location' => $liveDriver['driver_location'],
+                'distance_to_passenger_stop_km' => $liveDriver['distance_to_passenger_stop_km'],
+                'eta_to_passenger_stop_minutes' => $liveDriver['eta_to_passenger_stop_minutes'],
+                'driver_speed_kmh' => $liveDriver['driver_speed_kmh'],
+                'seats_booked' => max(0, (int) $trip->total_seats - (int) ($trip->available_seats ?? 0)),
+                'available_seats' => (int) ($trip->available_seats ?? 0),
+                'total_capacity' => (int) ($trip->total_seats ?? 0),
+                'has_live_driver' => $liveDriver['has_live_driver'],
             ];
         })->values();
 
@@ -187,6 +210,105 @@ class PassengerTripController extends Controller
             'eta_to_next_stop' => max(1, $remainingInSegment),
             'progress_percent' => $totalEtaMinutes <= 0 ? 0 : min(100, (int) round(($elapsedMinutes / max(1, $totalEtaMinutes)) * 100)),
             'total_eta_minutes' => $totalEtaMinutes,
+        ];
+    }
+
+    private function isDriverStillBeforePassengerStop(DriverTrip $trip, ?int $targetStopId): bool
+    {
+        if (!$targetStopId) {
+            return true;
+        }
+
+        $stops = $trip->stops()->orderBy('stop_order')->get();
+        $targetIndex = $stops->search(function ($tripStop) use ($targetStopId) {
+            return (int) $tripStop->route_stop_id === (int) $targetStopId;
+        });
+
+        if ($targetIndex === false || $targetIndex === null) {
+            return true;
+        }
+
+        $latestLocation = $trip->locations()->latest('recorded_at')->first();
+        if (!$latestLocation) {
+            return true;
+        }
+
+        $closestIndex = 0;
+        $closestDistance = null;
+
+        foreach ($stops as $index => $tripStop) {
+            $stop = $tripStop->stop;
+            if (!$stop || $stop->latitude === null || $stop->longitude === null) {
+                continue;
+            }
+
+            $distance = $this->distanceKm([
+                'latitude' => (float) $latestLocation->latitude,
+                'longitude' => (float) $latestLocation->longitude,
+            ], [
+                'latitude' => (float) $stop->latitude,
+                'longitude' => (float) $stop->longitude,
+            ]);
+
+            if ($closestDistance === null || $distance < $closestDistance) {
+                $closestDistance = $distance;
+                $closestIndex = $index;
+            }
+        }
+
+        return $closestIndex <= $targetIndex;
+    }
+
+    private function buildDriverLiveSnapshot(DriverTrip $trip, ?int $targetStopId, array $stopData): array
+    {
+        $latestLocation = $trip->locations()->latest('recorded_at')->first();
+        if (!$latestLocation) {
+            return [
+                'driver_location' => null,
+                'distance_to_passenger_stop_km' => null,
+                'eta_to_passenger_stop_minutes' => null,
+                'driver_speed_kmh' => null,
+                'has_live_driver' => false,
+            ];
+        }
+
+        $driverLocation = [
+            'latitude' => (float) $latestLocation->latitude,
+            'longitude' => (float) $latestLocation->longitude,
+            'recorded_at' => $latestLocation->recorded_at?->toDateTimeString(),
+        ];
+
+        $targetStop = $targetStopId ? $this->findStop($stopData, $targetStopId) : null;
+        $distanceToTarget = $targetStop && isset($targetStop['latitude'], $targetStop['longitude'])
+            ? $this->distanceKm($driverLocation, $targetStop)
+            : null;
+
+        $previousLocation = $trip->locations()->orderByDesc('recorded_at')->skip(1)->first();
+        $driverSpeedKmh = null;
+        if ($previousLocation && $previousLocation->recorded_at && $latestLocation->recorded_at) {
+            $travelDistanceKm = $this->distanceKm([
+                'latitude' => (float) $previousLocation->latitude,
+                'longitude' => (float) $previousLocation->longitude,
+            ], [
+                'latitude' => (float) $latestLocation->latitude,
+                'longitude' => (float) $latestLocation->longitude,
+            ]);
+
+            $elapsedMinutes = max(1, (int) $previousLocation->recorded_at->diffInMinutes($latestLocation->recorded_at, false));
+            $driverSpeedKmh = $travelDistanceKm > 0 ? max(0, round(($travelDistanceKm / max(1, $elapsedMinutes)) * 60, 1)) : 0;
+        }
+
+        $etaMinutes = null;
+        if ($distanceToTarget !== null && $distanceToTarget > 0 && is_numeric($driverSpeedKmh) && (float) $driverSpeedKmh > 0) {
+            $etaMinutes = max(1, (int) round(($distanceToTarget / (float) $driverSpeedKmh) * 60));
+        }
+
+        return [
+            'driver_location' => $driverLocation,
+            'distance_to_passenger_stop_km' => $distanceToTarget !== null ? round($distanceToTarget, 1) : null,
+            'eta_to_passenger_stop_minutes' => $etaMinutes,
+            'driver_speed_kmh' => $driverSpeedKmh,
+            'has_live_driver' => true,
         ];
     }
 
