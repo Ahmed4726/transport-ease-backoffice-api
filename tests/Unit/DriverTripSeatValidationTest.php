@@ -24,7 +24,7 @@ class DriverTripSeatValidationTest extends TestCase
         $result = $reflection->invoke($controller, 5, $vehicle);
 
         $this->assertFalse($result['valid']);
-        $this->assertStringContainsString('greater than 4', $result['message']);
+        $this->assertStringContainsString('greater than the approved vehicle capacity (4)', $result['message']);
     }
 
     public function test_non_approved_vehicle_requires_at_least_one_seat(): void

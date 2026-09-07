@@ -5,6 +5,8 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\DriverTrip;
 use App\Models\DriverTripLocation;
+use App\Enums\UserRole;
+use App\Enums\UserStatus;
 use Illuminate\Http\Request;
 
 class DriverTripLocationController extends Controller
@@ -14,7 +16,7 @@ class DriverTripLocationController extends Controller
     public function store(Request $request, DriverTrip $driverTrip)
     {
         $user = $request->user();
-        if (!$user?->driver || $driverTrip->driver_id !== $user->driver->id) {
+        if (!$this->ownsApprovedTrip($user, $driverTrip)) {
             return $this->error('Unauthorized.', [], 403);
         }
 
@@ -34,8 +36,21 @@ class DriverTripLocationController extends Controller
 
     public function latest(Request $request, DriverTrip $driverTrip)
     {
+        if (!$this->ownsApprovedTrip($request->user(), $driverTrip)) {
+            return $this->error('Unauthorized.', [], 403);
+        }
+
         $location = $driverTrip->locations()->latest('recorded_at')->first();
 
         return $this->success('Location fetched successfully.', $location);
+    }
+
+    private function ownsApprovedTrip($user, DriverTrip $driverTrip): bool
+    {
+        return $user
+            && $user->role === UserRole::DRIVER
+            && $user->status === UserStatus::APPROVED
+            && $user->driver
+            && $driverTrip->driver_id === $user->driver->id;
     }
 }

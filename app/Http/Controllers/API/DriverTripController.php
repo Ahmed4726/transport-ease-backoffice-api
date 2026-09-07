@@ -7,6 +7,9 @@ use App\Models\DriverTrip;
 use App\Models\DriverTripLocation;
 use App\Models\TripFare;
 use App\Models\DriverTripStop;
+use App\Enums\UserRole;
+use App\Enums\UserStatus;
+use App\Enums\VehicleStatus;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -71,12 +74,8 @@ class DriverTripController extends Controller
         $user = $request->user();
         $driver = $user->driver;
 
-        if (!$driver) {
-            return $this->error('Driver profile not found.', [], 404);
-        }
-
-        if ($driverTrip->driver_id !== $driver->id) {
-            return $this->error('Unauthorized.', [], 403);
+        if (!$this->isApprovedDriver($user, $driverTrip)) {
+            return $this->driverAccessError($user);
         }
 
         $trip = $driverTrip->load(['stops' => function ($query) {
@@ -115,11 +114,19 @@ class DriverTripController extends Controller
 
         $driver = $user->driver;
 
-        if (!$driver) {
-            return $this->error('Driver profile not found.', [], 404);
+        if (!$this->isApprovedDriver($user)) {
+            return $this->driverAccessError($user);
         }
 
+        $validated = $request->validate([
+            'status' => ['nullable', 'string', 'in:scheduled,started,completed'],
+        ]);
+
         $trips = DriverTrip::where('driver_id', $driver->id)
+            ->when($validated['status'] ?? null, fn ($query, $status) => $query->where('status', $status))
+            ->orderByRaw("CASE status WHEN 'started' THEN 1 WHEN 'scheduled' THEN 2 WHEN 'completed' THEN 3 ELSE 4 END")
+            ->orderBy('trip_date')
+            ->orderBy('departure_time')
             ->with(['stops' => function ($query) {
                 $query->orderBy('stop_order');
             }, 'stops.stop.city'])
@@ -147,12 +154,8 @@ class DriverTripController extends Controller
         $user = $request->user();
         $driver = $user->driver;
 
-        if (!$driver) {
-            return $this->error('Driver profile not found.', [], 404);
-        }
-
-        if ($driverTrip->driver_id !== $driver->id) {
-            return $this->error('Unauthorized.', [], 403);
+        if (!$this->isApprovedDriver($user, $driverTrip)) {
+            return $this->driverAccessError($user);
         }
 
         $validated = $request->validate([
@@ -171,16 +174,37 @@ class DriverTripController extends Controller
         DB::beginTransaction();
 
         try {
+            $driverTrip = DriverTrip::query()->lockForUpdate()->findOrFail($driverTrip->id);
+
+            if (in_array($driverTrip->status, ['completed', 'cancelled'], true)) {
+                DB::rollBack();
+                return $this->error('Completed and cancelled trips are read-only.', [], 422);
+            }
+
             if (array_key_exists('total_seats', $validated)) {
+                $reservedSeats = (int) $driverTrip->bookings()
+                    ->whereIn('status', ['confirmed', 'boarded'])
+                    ->sum('seats');
+                if ($validated['total_seats'] < $reservedSeats) {
+                    DB::rollBack();
+                    return $this->error('Total seats cannot be less than active reserved seats.', [], 422);
+                }
+
                 $driverTrip->total_seats = $validated['total_seats'];
-                $driverTrip->available_seats = max(1, min($validated['total_seats'], $driverTrip->available_seats ?? $validated['total_seats']));
+                $driverTrip->available_seats = max(0, $validated['total_seats'] - $reservedSeats);
                 $driverTrip->save();
             }
 
             if (array_key_exists('stop_ids', $validated)) {
                 $sequence = array_values(array_unique($validated['stop_ids']));
                 if (count($sequence) < 2) {
+                    DB::rollBack();
                     return $this->error('At least two stops are required.', [], 422);
+                }
+
+                if ($driverTrip->bookings()->whereIn('status', ['confirmed', 'boarded'])->exists()) {
+                    DB::rollBack();
+                    return $this->error('Trips with active bookings cannot change stops.', [], 422);
                 }
 
                 $driverTrip->stops()->delete();
@@ -217,14 +241,9 @@ class DriverTripController extends Controller
     public function start(Request $request, DriverTrip $driverTrip)
     {
         $user = $request->user();
-        $driver = $user->driver;
 
-        if (!$driver) {
-            return $this->error('Driver profile not found.', [], 404);
-        }
-
-        if ($driverTrip->driver_id !== $driver->id) {
-            return $this->error('Unauthorized.', [], 403);
+        if (!$this->isApprovedDriver($user, $driverTrip)) {
+            return $this->driverAccessError($user);
         }
 
         $validated = $request->validate([
@@ -239,16 +258,43 @@ class DriverTripController extends Controller
         }
 
         try {
-            $this->applyTripStartState(
-                $driverTrip,
-                $validated['latitude'] ?? null,
-                $validated['longitude'] ?? null,
-            );
+            $startedTrip = DB::transaction(function () use ($driverTrip, $validated): DriverTrip {
+                $lockedTrip = DriverTrip::query()->lockForUpdate()->findOrFail($driverTrip->id);
+                if ($lockedTrip->status !== 'scheduled') {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'trip' => 'Only scheduled trips can be started.',
+                    ]);
+                }
 
-            return $this->success('Trip started successfully.', $driverTrip);
+                return $this->applyTripStartState(
+                    $lockedTrip,
+                    $validated['latitude'] ?? null,
+                    $validated['longitude'] ?? null,
+                );
+            });
+
+            return $this->success('Trip started successfully.', $startedTrip);
+        } catch (\Illuminate\Validation\ValidationException $exception) {
+            return $this->error($exception->validator->errors()->first(), $exception->errors(), 422);
         } catch (\Exception $e) {
             return $this->error('Failed to start trip: ' . $e->getMessage(), [], 500);
         }
+    }
+
+    public function complete(Request $request, DriverTrip $driverTrip)
+    {
+        $user = $request->user();
+        if (!$this->isApprovedDriver($user, $driverTrip)) {
+            return $this->driverAccessError($user);
+        }
+
+        try {
+            $completedTrip = app(\App\Services\BookingService::class)->completeTrip($driverTrip);
+        } catch (\Illuminate\Validation\ValidationException $exception) {
+            return $this->error($exception->validator->errors()->first(), $exception->errors(), 422);
+        }
+
+        return $this->success('Trip completed successfully.', $completedTrip);
     }
 
     public function destroy(Request $request, DriverTrip $driverTrip)
@@ -256,12 +302,16 @@ class DriverTripController extends Controller
         $user = $request->user();
         $driver = $user->driver;
 
-        if (!$driver) {
-            return $this->error('Driver profile not found.', [], 404);
+        if (!$this->isApprovedDriver($user, $driverTrip)) {
+            return $this->driverAccessError($user);
         }
 
-        if ($driverTrip->driver_id !== $driver->id) {
-            return $this->error('Unauthorized.', [], 403);
+        if (in_array($driverTrip->status, ['completed', 'cancelled'], true)) {
+            return $this->error('Completed and cancelled trips are read-only.', [], 422);
+        }
+
+        if ($driverTrip->bookings()->exists()) {
+            return $this->error('Trips with bookings cannot be deleted.', [], 422);
         }
 
         DB::beginTransaction();
@@ -287,8 +337,8 @@ class DriverTripController extends Controller
 
         $driver = $user->driver;
 
-        if (!$driver) {
-            return $this->error('Driver profile not found.', [], 404);
+        if (!$this->isApprovedDriver($user)) {
+            return $this->driverAccessError($user);
         }
 
         $validated = $request->validate([
@@ -304,6 +354,9 @@ class DriverTripController extends Controller
         ]);
 
         $vehicle = \App\Models\Vehicle::find($validated['vehicle_id']);
+        if (!$vehicle || $vehicle->driver_id !== $driver->id || $vehicle->status !== VehicleStatus::APPROVED) {
+            return $this->error('An approved vehicle belonging to the driver is required.', [], 422);
+        }
         $seatValidation = $this->validateSeatCount($validated['total_seats'], $vehicle);
         if (!$seatValidation['valid']) {
             return $this->error($seatValidation['message'], [], 422);
@@ -361,5 +414,23 @@ class DriverTripController extends Controller
 
             return $this->error('Failed to create trip: ' . $e->getMessage(), [], 500);
         }
+    }
+
+    private function isApprovedDriver($user, ?DriverTrip $driverTrip = null): bool
+    {
+        return $user
+            && $user->role === UserRole::DRIVER
+            && $user->status === UserStatus::APPROVED
+            && $user->driver
+            && (!$driverTrip || $driverTrip->driver_id === $user->driver->id);
+    }
+
+    private function driverAccessError($user)
+    {
+        if (!$user?->driver) {
+            return $this->error('Driver profile not found.', [], 404);
+        }
+
+        return $this->error('Unauthorized.', [], 403);
     }
 }

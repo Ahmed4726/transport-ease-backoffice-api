@@ -6,7 +6,7 @@ use App\Http\Controllers\Admin\TripController;
 use App\Models\City;
 use App\Models\CityStop;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use PHPUnit\Framework\TestCase;
+use Tests\TestCase;
 
 class TripControllerSelectedStopNormalizationTest extends TestCase
 {

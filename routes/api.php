@@ -11,6 +11,7 @@ use App\Http\Controllers\API\RouteStopController;
 use App\Http\Controllers\API\DriverTripController;
 use App\Http\Controllers\API\DriverTripLocationController;
 use App\Http\Controllers\API\PassengerTripController;
+use App\Http\Controllers\API\BookingController;
 
 Route::prefix('auth')->group(function () {
 
@@ -26,6 +27,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/cities', [CityController::class, 'index']);
     Route::get('/cities/{city}/stops', [RouteStopController::class, 'cityStops']);
     Route::get('/passenger-trips', [PassengerTripController::class, 'index']);
+    Route::get('/passenger/bookings', [BookingController::class, 'index']);
+    Route::post('/passenger/bookings', [BookingController::class, 'store']);
+    Route::get('/passenger/bookings/{booking}', [BookingController::class, 'show']);
+    Route::post('/passenger/bookings/{booking}/cancel', [BookingController::class, 'cancel']);
 
     Route::get('/profile', [AuthController::class, 'profile']);
         Route::post('/profile/availability', [AuthController::class, 'updateAvailability']);
@@ -56,9 +61,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/driver-trips/{driverTrip}', [DriverTripController::class, 'update']);
         Route::post('/driver-trips', [DriverTripController::class, 'store']);
         Route::post('/driver-trips/{driverTrip}/start', [DriverTripController::class, 'start']);
+        Route::post('/driver-trips/{driverTrip}/complete', [DriverTripController::class, 'complete']);
         Route::delete('/driver-trips/{driverTrip}', [DriverTripController::class, 'destroy']);
         Route::post('/driver-trips/{driverTrip}/locations', [DriverTripLocationController::class, 'store']);
         Route::get('/driver-trips/{driverTrip}/locations/latest', [DriverTripLocationController::class, 'latest']);
+        Route::get('/driver-trips/{driverTrip}/bookings', [BookingController::class, 'driverBookings']);
+        Route::post('/driver-trips/{driverTrip}/bookings/{booking}/board', [BookingController::class, 'board']);
+        Route::post('/driver-trips/{driverTrip}/bookings/{booking}/no-show', [BookingController::class, 'noShow']);
 
         Route::get('/me', [AuthController::class, 'me']);
 

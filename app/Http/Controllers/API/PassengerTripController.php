@@ -4,6 +4,10 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Models\DriverTrip;
+use App\Enums\UserRole;
+use App\Enums\UserStatus;
+use App\Enums\VehicleStatus;
+use App\Services\BookingService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 
@@ -11,10 +15,12 @@ class PassengerTripController extends Controller
 {
     use \App\Traits\ApiResponse;
 
+    public function __construct(private readonly BookingService $bookingService) {}
+
     public function index(Request $request)
     {
         $user = $request->user();
-        if (!$user?->passenger) {
+        if (!$user?->passenger || $user->role !== UserRole::PASSENGER || $user->status !== UserStatus::APPROVED) {
             return $this->error('Passenger profile not found.', [], 404);
         }
 
@@ -25,17 +31,22 @@ class PassengerTripController extends Controller
 
         $query = DriverTrip::query()
             ->whereIn('status', ['scheduled', 'started'])
+            ->whereHas('driver.user', fn ($query) => $query->where('status', UserStatus::APPROVED->value))
+            ->whereHas('vehicle', fn ($query) => $query->where('status', VehicleStatus::APPROVED->value))
             ->with(['driver.user', 'vehicle', 'stops.stop.city'])
             ->orderBy('trip_date')
             ->orderBy('departure_time');
 
         $trips = $query->get();
 
-        $fromStopId = $validated['from_stop_id'] ?? null;
-        $toStopId = $validated['to_stop_id'] ?? null;
+        $fromStopId = isset($validated['from_stop_id']) ? (int) $validated['from_stop_id'] : null;
+        $toStopId = isset($validated['to_stop_id']) ? (int) $validated['to_stop_id'] : null;
 
         $payload = $trips->filter(function (DriverTrip $trip) use ($fromStopId, $toStopId): bool {
             $stopIds = $trip->stops->pluck('route_stop_id')->filter()->values()->all();
+
+            $fromIndex = $fromStopId ? array_search($fromStopId, $stopIds, true) : null;
+            $toIndex = $toStopId ? array_search($toStopId, $stopIds, true) : null;
 
             if ($fromStopId && !in_array($fromStopId, $stopIds, true)) {
                 return false;
@@ -46,6 +57,10 @@ class PassengerTripController extends Controller
             }
 
             if ($fromStopId && $toStopId && $fromStopId === $toStopId) {
+                return false;
+            }
+
+            if ($fromIndex !== null && $toIndex !== null && $fromIndex >= $toIndex) {
                 return false;
             }
 
@@ -85,7 +100,6 @@ class PassengerTripController extends Controller
             return [
                 'id' => $trip->id,
                 'driver_name' => $trip->driver?->user?->name ?? 'Driver',
-                'driver_phone' => $trip->driver?->user?->phone ?? null,
                 'vehicle_name' => $trip->vehicle?->plate_number ?? 'Vehicle',
                 'status' => $trip->status,
                 'trip_date' => $trip->trip_date?->toDateString(),
@@ -103,8 +117,8 @@ class PassengerTripController extends Controller
                 'distance_to_passenger_stop_km' => $liveDriver['distance_to_passenger_stop_km'],
                 'eta_to_passenger_stop_minutes' => $liveDriver['eta_to_passenger_stop_minutes'],
                 'driver_speed_kmh' => $liveDriver['driver_speed_kmh'],
-                'seats_booked' => max(0, (int) $trip->total_seats - (int) ($trip->available_seats ?? 0)),
-                'available_seats' => (int) ($trip->available_seats ?? 0),
+                'seats_booked' => $this->bookingService->reservedSeats($trip),
+                'available_seats' => $this->bookingService->availableSeats($trip),
                 'total_capacity' => (int) ($trip->total_seats ?? 0),
                 'has_live_driver' => $liveDriver['has_live_driver'],
             ];

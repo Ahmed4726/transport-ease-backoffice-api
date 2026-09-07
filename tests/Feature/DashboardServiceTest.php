@@ -71,9 +71,9 @@ class DashboardServiceTest extends TestCase
         $data = $service->getDashboardData();
 
         $this->assertSame(2, $data['totalDrivers']);
-        $this->assertSame(1, $data['approvedDrivers']);
-        $this->assertSame(1, $data['pendingDrivers']);
-        $this->assertSame(0, $data['rejectedDrivers']);
+        $this->assertSame(1, $data['driverStatusCounts']['approved']);
+        $this->assertSame(1, $data['driverStatusCounts']['pending']);
+        $this->assertSame(0, $data['driverStatusCounts']['rejected']);
         $this->assertCount(2, $data['recentDrivers']);
         $this->assertNotContains('orphan@example.com', $data['recentDrivers']->pluck('email'));
     }

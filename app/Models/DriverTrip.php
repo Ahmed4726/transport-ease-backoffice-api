@@ -5,7 +5,6 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use App\Models\TripBooking;
 
 class DriverTrip extends Model
 {
@@ -85,8 +84,7 @@ class DriverTrip extends Model
 
     public function bookings(): HasMany
     {
-        // TripBooking model may not exist yet in this codebase, return relation by class string to avoid static error
-        return $this->hasMany('\App\\Models\\TripBooking');
+        return $this->hasMany(TripBooking::class, 'driver_trip_id');
     }
 
     public function locations(): HasMany
