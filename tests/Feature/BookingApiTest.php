@@ -10,6 +10,7 @@ use App\Models\CityStop;
 use App\Models\Driver;
 use App\Models\DriverTrip;
 use App\Models\DriverTripStop;
+use App\Models\DriverTripLocation;
 use App\Models\Passenger;
 use App\Models\TripBooking;
 use App\Models\TripFare;
@@ -64,6 +65,27 @@ class BookingApiTest extends TestCase
         $trip->fares()->delete();
         $this->actingAs($user, 'sanctum')->postJson('/api/passenger/bookings', ['trip_id' => $trip->id, 'from_stop_id' => $stopIds[0], 'to_stop_id' => $stopIds[1], 'seats' => 1])->assertUnprocessable();
         $this->assertDatabaseCount('trip_bookings', 0);
+    }
+
+    public function test_driver_location_updates_keep_one_current_snapshot_per_trip(): void
+    {
+        [$driverUser] = $this->driver('location-snapshot');
+        $trip = $this->trip(4, $driverUser->driver);
+
+        $this->actingAs($driverUser, 'sanctum')
+            ->postJson("/api/driver-trips/{$trip->id}/locations", ['latitude' => 24.1, 'longitude' => 67.1])
+            ->assertOk();
+        $firstRecordedAt = DriverTripLocation::first()->recorded_at;
+
+        $this->actingAs($driverUser, 'sanctum')
+            ->postJson("/api/driver-trips/{$trip->id}/locations", ['latitude' => 24.2, 'longitude' => 67.2])
+            ->assertOk();
+
+        $this->assertSame(1, DriverTripLocation::where('driver_trip_id', $trip->id)->count());
+        $location = DriverTripLocation::where('driver_trip_id', $trip->id)->firstOrFail();
+        $this->assertSame(24.2, (float) $location->latitude);
+        $this->assertSame(67.2, (float) $location->longitude);
+        $this->assertTrue($location->recorded_at->greaterThanOrEqualTo($firstRecordedAt));
     }
 
     public function test_booking_ignores_client_fare_and_preserves_the_snapshot_after_trip_fare_changes(): void
@@ -504,15 +526,33 @@ class BookingApiTest extends TestCase
         $this->assertDatabaseHas('driver_trips', ['id' => $started->id, 'status' => 'started']);
     }
 
-    public function test_unauthenticated_or_non_bookable_trip_cannot_be_booked(): void
+    public function test_unauthenticated_or_completed_trip_cannot_be_booked(): void
     {
         [$user] = $this->passenger('state');
         $trip = $this->trip();
         $stopIds = $trip->stops()->orderBy('stop_order')->pluck('route_stop_id')->all();
 
         $this->postJson('/api/passenger/bookings', ['trip_id' => $trip->id, 'from_stop_id' => $stopIds[0], 'to_stop_id' => $stopIds[1], 'seats' => 1])->assertUnauthorized();
-        $trip->update(['status' => 'started']);
+        $trip->update(['status' => 'completed']);
         $this->actingAs($user, 'sanctum')->postJson('/api/passenger/bookings', ['trip_id' => $trip->id, 'from_stop_id' => $stopIds[0], 'to_stop_id' => $stopIds[1], 'seats' => 1])->assertUnprocessable();
+    }
+
+    public function test_passenger_can_book_an_active_trip_before_pickup(): void
+    {
+        [$user] = $this->passenger('active-booking');
+        $trip = $this->trip();
+        $trip->update(['status' => 'started', 'started_at' => now()]);
+        $stopIds = $trip->stops()->orderBy('stop_order')->pluck('route_stop_id')->all();
+
+        $this->actingAs($user, 'sanctum')
+            ->postJson('/api/passenger/bookings', [
+                'trip_id' => $trip->id,
+                'from_stop_id' => $stopIds[0],
+                'to_stop_id' => $stopIds[1],
+                'seats' => 1,
+            ])
+            ->assertCreated()
+            ->assertJsonPath('data.status', 'confirmed');
     }
 
     public function test_trip_search_uses_booking_availability_and_cancellation_restores_it(): void

@@ -57,8 +57,9 @@ class DriverTripController extends Controller
             $longitudeValue = (float) $longitude;
 
             if ($latitudeValue >= -90 && $latitudeValue <= 90 && $longitudeValue >= -180 && $longitudeValue <= 180) {
-                DriverTripLocation::create([
+                DriverTripLocation::updateOrCreate([
                     'driver_trip_id' => $driverTrip->id,
+                ], [
                     'latitude' => $latitudeValue,
                     'longitude' => $longitudeValue,
                     'recorded_at' => now(),

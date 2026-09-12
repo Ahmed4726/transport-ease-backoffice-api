@@ -35,9 +35,11 @@ class BookingResource extends JsonResource
                 'status' => $this->trip?->status,
                 'trip_date' => $this->trip?->trip_date?->toDateString(),
                 'departure_time' => $this->trip?->departure_time?->format('H:i'),
+                'driver_phone' => $this->trip?->driver?->user?->phone,
             ]),
             'passenger' => $this->when($isDriverManifest, fn () => [
                 'name' => $this->passenger?->user?->name,
+                'phone' => $this->passenger?->user?->phone,
             ]),
         ];
     }

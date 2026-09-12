@@ -12,6 +12,7 @@ use App\Http\Controllers\API\DriverTripController;
 use App\Http\Controllers\API\DriverTripLocationController;
 use App\Http\Controllers\API\PassengerTripController;
 use App\Http\Controllers\API\BookingController;
+use App\Http\Controllers\API\ChatController;
 
 Route::prefix('auth')->group(function () {
 
@@ -31,6 +32,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/passenger/bookings', [BookingController::class, 'store']);
     Route::get('/passenger/bookings/{booking}', [BookingController::class, 'show']);
     Route::post('/passenger/bookings/{booking}/cancel', [BookingController::class, 'cancel']);
+    Route::get('/passenger/bookings/{booking}/chat', [ChatController::class, 'conversation']);
+    Route::post('/passenger/bookings/{booking}/chat/messages', [ChatController::class, 'sendMessage']);
+    Route::post('/passenger/bookings/{booking}/chat/read', [ChatController::class, 'markRead']);
 
     Route::get('/profile', [AuthController::class, 'profile']);
         Route::post('/profile/availability', [AuthController::class, 'updateAvailability']);
@@ -68,6 +72,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/driver-trips/{driverTrip}/bookings', [BookingController::class, 'driverBookings']);
         Route::post('/driver-trips/{driverTrip}/bookings/{booking}/board', [BookingController::class, 'board']);
         Route::post('/driver-trips/{driverTrip}/bookings/{booking}/no-show', [BookingController::class, 'noShow']);
+        Route::get('/driver-trips/{driverTrip}/bookings/{booking}/chat', [ChatController::class, 'conversation']);
+        Route::post('/driver-trips/{driverTrip}/bookings/{booking}/chat/messages', [ChatController::class, 'sendMessage']);
+        Route::post('/driver-trips/{driverTrip}/bookings/{booking}/chat/read', [ChatController::class, 'markRead']);
 
         Route::get('/me', [AuthController::class, 'me']);
 

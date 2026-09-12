@@ -8,7 +8,6 @@ use App\Enums\UserRole;
 use App\Enums\UserStatus;
 use App\Enums\VehicleStatus;
 use App\Services\BookingService;
-use Carbon\Carbon;
 use Illuminate\Http\Request;
 
 class PassengerTripController extends Controller
@@ -37,7 +36,7 @@ class PassengerTripController extends Controller
             ->orderBy('trip_date')
             ->orderBy('departure_time');
 
-        $trips = $query->get();
+        $trips = $query->get()->unique('id')->values();
 
         $fromStopId = isset($validated['from_stop_id']) ? (int) $validated['from_stop_id'] : null;
         $toStopId = isset($validated['to_stop_id']) ? (int) $validated['to_stop_id'] : null;
@@ -79,7 +78,16 @@ class PassengerTripController extends Controller
             }
 
             return $this->isDriverStillBeforePassengerStop($trip, $targetStopId);
-        })->map(function (DriverTrip $trip) use ($fromStopId, $toStopId): array {
+        })->sortBy(function (DriverTrip $trip): int {
+            return $trip->status === 'started' ? 0 : 1;
+        })->unique(function (DriverTrip $trip) use ($fromStopId, $toStopId): string {
+            return implode(':', [
+                $trip->driver_id,
+                $trip->vehicle_id,
+                $fromStopId ?? 'first',
+                $toStopId ?? 'last',
+            ]);
+        })->values()->map(function (DriverTrip $trip) use ($fromStopId, $toStopId): array {
             $orderedStops = $trip->stops->sortBy('stop_order')->values();
             $stopData = [];
 
@@ -94,14 +102,16 @@ class PassengerTripController extends Controller
                 ];
             }
 
-            $progress = $this->buildTripProgress($trip, $stopData);
+            $progress = $this->buildTripProgress($trip, $stopData, $toStopId ?? $fromStopId);
             $liveDriver = $this->buildDriverLiveSnapshot($trip, $toStopId ?? $fromStopId, $stopData);
 
             return [
                 'id' => $trip->id,
                 'driver_name' => $trip->driver?->user?->name ?? 'Driver',
+                'driver_phone' => $trip->driver?->user?->phone ?? null,
                 'vehicle_name' => $trip->vehicle?->plate_number ?? 'Vehicle',
                 'status' => $trip->status,
+                'can_book' => $this->bookingService->canBook($trip, $fromStopId),
                 'trip_date' => $trip->trip_date?->toDateString(),
                 'departure_time' => $trip->departure_time?->format('H:i'),
                 'from_stop' => $fromStopId ? $this->findStop($stopData, $fromStopId) : ($stopData[0] ?? null),
@@ -127,7 +137,7 @@ class PassengerTripController extends Controller
         return $this->success('Available trips fetched successfully.', $payload);
     }
 
-    private function buildTripProgress(DriverTrip $trip, array $stops): array
+    private function buildTripProgress(DriverTrip $trip, array $stops, ?int $targetStopId = null): array
     {
         if (count($stops) < 2) {
             return [
@@ -141,7 +151,7 @@ class PassengerTripController extends Controller
         }
 
         $segments = [];
-        $totalEtaMinutes = 0;
+        $totalRouteMinutes = 0;
 
         for ($i = 0; $i < count($stops) - 1; $i++) {
             $from = $stops[$i];
@@ -154,75 +164,59 @@ class PassengerTripController extends Controller
                 'to' => $to,
                 'minutes' => $segmentMinutes,
             ];
-            $totalEtaMinutes += $segmentMinutes;
+            $totalRouteMinutes += $segmentMinutes;
         }
 
-        $hasStarted = $trip->status === 'started' && $trip->started_at;
-        $startedAt = $hasStarted ? Carbon::parse($trip->started_at) : null;
-        $elapsedMinutes = $startedAt ? max(0, (int) $startedAt->diffInMinutes(Carbon::now())) : 0;
+        $targetIndex = $targetStopId === null ? count($stops) - 1 : collect($stops)->search(fn ($stop) => (int) $stop['id'] === $targetStopId);
+        if ($targetIndex === false) $targetIndex = count($stops) - 1;
 
-        if (!$hasStarted || $elapsedMinutes <= 0) {
-            return [
-                'current_stop' => $stops[0],
-                'next_stop' => $stops[1] ?? null,
-                'current_location' => $stops[0],
-                'eta_to_next_stop' => $segments[0]['minutes'] ?? 0,
-                'progress_percent' => 0,
-                'total_eta_minutes' => $totalEtaMinutes,
-            ];
-        }
-
-        $accumulated = 0;
-        $currentSegmentIndex = 0;
-
-        foreach ($segments as $index => $segment) {
-            $segmentMinutes = max(1, $segment['minutes']);
-            if ($elapsedMinutes <= $accumulated + $segmentMinutes) {
-                $currentSegmentIndex = $index;
-                break;
+        $latestLocation = $trip->locations()->latest('recorded_at')->first();
+        $currentIndex = 0;
+        if ($latestLocation) {
+            $closestDistance = null;
+            foreach ($stops as $index => $stop) {
+                $distance = $this->distanceKm([
+                    'latitude' => (float) $latestLocation->latitude,
+                    'longitude' => (float) $latestLocation->longitude,
+                ], $stop);
+                if ($closestDistance === null || $distance < $closestDistance) {
+                    $closestDistance = $distance;
+                    $currentIndex = $index;
+                }
             }
-            $accumulated += $segmentMinutes;
-            $currentSegmentIndex = $index + 1;
         }
 
-        if ($currentSegmentIndex >= count($segments)) {
-            return [
-                'current_stop' => $stops[count($stops) - 1],
-                'next_stop' => null,
-                'current_location' => $stops[count($stops) - 1],
-                'eta_to_next_stop' => 0,
-                'progress_percent' => 100,
-                'total_eta_minutes' => $totalEtaMinutes,
-            ];
-        }
+        $nextIndex = min($currentIndex + 1, count($stops) - 1);
+        $currentStop = $stops[$currentIndex];
+        $nextStop = $currentIndex < count($stops) - 1 ? $stops[$nextIndex] : null;
+        $currentLocation = $latestLocation ? [
+            'id' => null,
+            'display_name' => 'Current location',
+            'city_name' => $currentStop['city_name'],
+            'latitude' => (float) $latestLocation->latitude,
+            'longitude' => (float) $latestLocation->longitude,
+            'recorded_at' => $latestLocation->recorded_at?->toDateTimeString(),
+        ] : $currentStop;
 
-        $segment = $segments[$currentSegmentIndex];
-        $segmentElapsed = max(0, $elapsedMinutes - $accumulated);
-        $segmentProgress = $segment['minutes'] <= 0 ? 1.0 : min(1.0, $segmentElapsed / max(1, $segment['minutes']));
-
-        $from = $segment['from'];
-        $to = $segment['to'];
-        $currentLocation = [
-            'id' => $to['id'],
-            'display_name' => $to['display_name'],
-            'city_name' => $to['city_name'],
-            'latitude' => ($from['latitude'] ?? 0) + (($to['latitude'] ?? 0) - ($from['latitude'] ?? 0)) * $segmentProgress,
-            'longitude' => ($from['longitude'] ?? 0) + (($to['longitude'] ?? 0) - ($from['longitude'] ?? 0)) * $segmentProgress,
-        ];
-
-        $remainingInSegment = max(0, max(1, $segment['minutes']) - $segmentElapsed);
-        $remainingMinutes = $remainingInSegment;
-
-        for ($i = $currentSegmentIndex + 1; $i < count($segments); $i++) {
-            $remainingMinutes += $segments[$i]['minutes'];
+        $etaToNext = $nextStop && $latestLocation
+            ? max(1, (int) round(($this->distanceKm($currentLocation, $nextStop) / 65.0) * 60))
+            : ($segments[$currentIndex]['minutes'] ?? 0);
+        $totalEtaMinutes = 0;
+        if ($targetIndex > $currentIndex) {
+            if ($latestLocation) {
+                $totalEtaMinutes += (int) round(($this->distanceKm($currentLocation, $stops[$currentIndex + 1]) / 65.0) * 60);
+                for ($i = $currentIndex + 1; $i < $targetIndex; $i++) $totalEtaMinutes += $segments[$i]['minutes'];
+            } else {
+                for ($i = $currentIndex; $i < $targetIndex; $i++) $totalEtaMinutes += $segments[$i]['minutes'];
+            }
         }
 
         return [
-            'current_stop' => $segment['from'],
-            'next_stop' => $segment['to'],
+            'current_stop' => $currentStop,
+            'next_stop' => $nextStop,
             'current_location' => $currentLocation,
-            'eta_to_next_stop' => max(1, $remainingInSegment),
-            'progress_percent' => $totalEtaMinutes <= 0 ? 0 : min(100, (int) round(($elapsedMinutes / max(1, $totalEtaMinutes)) * 100)),
+            'eta_to_next_stop' => $etaToNext,
+            'progress_percent' => $totalRouteMinutes <= 0 ? 0 : min(100, (int) round(($currentIndex / max(1, count($stops) - 1)) * 100)),
             'total_eta_minutes' => $totalEtaMinutes,
         ];
     }

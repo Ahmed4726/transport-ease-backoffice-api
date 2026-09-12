@@ -25,10 +25,12 @@ class DriverTripLocationController extends Controller
             'longitude' => ['required', 'numeric'],
         ]);
 
-        DriverTripLocation::create([
+        DriverTripLocation::updateOrCreate([
             'driver_trip_id' => $driverTrip->id,
+        ], [
             'latitude' => $validated['latitude'],
             'longitude' => $validated['longitude'],
+            'recorded_at' => now(),
         ]);
 
         return $this->success('Location updated successfully.');

@@ -30,6 +30,55 @@ class BookingService
         return max(0, (int) $trip->total_seats - $this->availableSeats($trip));
     }
 
+    public function canBook(DriverTrip $trip, ?int $fromStopId = null): bool
+    {
+        if ($trip->status === 'scheduled') {
+            return true;
+        }
+
+        if ($trip->status !== 'started') {
+            return false;
+        }
+
+        $stops = $trip->stops()->orderBy('stop_order')->get();
+        $pickupIndex = $fromStopId === null
+            ? 0
+            : $stops->search(
+                fn ($tripStop) => (int) $tripStop->route_stop_id === $fromStopId,
+            );
+
+        if ($pickupIndex === false) {
+            return false;
+        }
+
+        $latestLocation = $trip->locations()->latest('recorded_at')->first();
+        if (!$latestLocation) {
+            return true;
+        }
+
+        $closestIndex = 0;
+        $closestDistance = null;
+        foreach ($stops as $index => $tripStop) {
+            $stop = $tripStop->stop;
+            if (!$stop || $stop->latitude === null || $stop->longitude === null) {
+                continue;
+            }
+
+            $distance = $this->distanceKm(
+                (float) $latestLocation->latitude,
+                (float) $latestLocation->longitude,
+                (float) $stop->latitude,
+                (float) $stop->longitude,
+            );
+            if ($closestDistance === null || $distance < $closestDistance) {
+                $closestDistance = $distance;
+                $closestIndex = $index;
+            }
+        }
+
+        return $closestIndex <= $pickupIndex;
+    }
+
     public function create(Passenger $passenger, int $tripId, int $seats, ?int $fromStopId = null, ?int $toStopId = null): TripBooking
     {
         if ($seats < 1 || $seats > 4) {
@@ -43,7 +92,7 @@ class BookingService
                 throw ValidationException::withMessages(['trip_id' => 'The selected trip does not exist.']);
             }
 
-            if ($trip->status !== 'scheduled') {
+            if (!$this->canBook($trip, $fromStopId)) {
                 throw ValidationException::withMessages(['trip_id' => 'This trip is not available for booking.']);
             }
 
@@ -229,5 +278,19 @@ class BookingService
         } while (TripBooking::where('booking_reference', $reference)->exists());
 
         return $reference;
+    }
+
+    private function distanceKm(float $fromLatitude, float $fromLongitude, float $toLatitude, float $toLongitude): float
+    {
+        $earthRadiusKm = 6371.0;
+        $lat1 = deg2rad($fromLatitude);
+        $lon1 = deg2rad($fromLongitude);
+        $lat2 = deg2rad($toLatitude);
+        $lon2 = deg2rad($toLongitude);
+        $deltaLat = $lat2 - $lat1;
+        $deltaLon = $lon2 - $lon1;
+        $a = sin($deltaLat / 2) ** 2 + cos($lat1) * cos($lat2) * sin($deltaLon / 2) ** 2;
+
+        return $earthRadiusKm * 2 * atan2(sqrt($a), sqrt(1 - $a));
     }
 }
